@@ -44,36 +44,39 @@ def init_db():
                  (question_id INTEGER PRIMARY KEY, 
                   user_answer TEXT, 
                   is_graded INTEGER DEFAULT 0)''')
+    
+    # PDF 처리 마지막 페이지 기억용 테이블
+    c.execute('''CREATE TABLE IF NOT EXISTS pdf_progress 
+                 (round TEXT PRIMARY KEY, 
+                  last_page INTEGER)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-def save_question_if_not_exists(round_name, q_text, answer, solution):
-    """중복 문제 저장을 방지하기 위해 내용이 완전히 일치하는 문제가 이미 있으면 저장하지 않음"""
+def save_question_direct(round_name, q_text, answer, solution):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    
-    # 해당 회차의 모든 문제 본문을 가져와서 검사
-    existing_questions = c.execute("SELECT content FROM questions WHERE round = ?", (round_name,)).fetchall()
-    
-    for row in existing_questions:
-        try:
-            content_dict = json.loads(row[0])
-            existing_q_text = content_dict.get("question", "").strip()
-            # 텍스트가 80% 이상 유사하거나 완전히 같으면 중복으로 판단하여 스킵
-            if existing_q_text == q_text.strip():
-                conn.close()
-                return False  # 이미 존재함 (저장 안 함)
-        except:
-            pass
-
-    # 중복이 없으면 새로 저장
     c.execute("INSERT INTO questions (round, content, correct_answer, solution, is_wrong) VALUES (?, ?, ?, ?, 0)", 
               (round_name, q_text, answer, solution))
     conn.commit()
     conn.close()
-    return True  # 새로 저장됨
+
+def get_last_pdf_page(round_name):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    row = c.execute("SELECT last_page FROM pdf_progress WHERE round = ?", (round_name,)).fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def save_last_pdf_page(round_name, page_num):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''INSERT INTO pdf_progress (round, last_page) VALUES (?, ?) 
+                 ON CONFLICT(round) DO UPDATE SET last_page = ?''', 
+              (round_name, page_num, page_num))
+    conn.commit()
+    conn.close()
 
 def update_question_content_and_solution(q_id, content, solution):
     conn = sqlite3.connect(DB_FILE)
@@ -145,10 +148,10 @@ def reset_round_questions(round_name):
     if q_ids: c.execute(f"DELETE FROM wrong_progress WHERE question_id IN ({','.join(['?']*len(q_ids))})", q_ids)
     c.execute("DELETE FROM questions WHERE round = ?", (round_name,))
     c.execute("DELETE FROM user_progress WHERE round = ?", (round_name,))
+    c.execute("DELETE FROM pdf_progress WHERE round = ?", (round_name,))
     conn.commit()
     conn.close()
 
-# --- 503 및 과부하 방지용 재시도 래퍼 함수 ---
 def call_gemini_with_retry(client, contents, max_retries=5, initial_delay=3):
     delay = initial_delay
     for attempt in range(max_retries):
@@ -190,10 +193,16 @@ if check_password():
         st.header("📌 신규 문제 등록")
         round_name = st.selectbox("회차 선택", ROUND_OPTIONS)
         
-        if st.button(f"⚠️ [{round_name}]에 등록된 모든 문제 데이터 초기화하기"):
+        # 현재 기억된 이어하기 페이지 상태 표시
+        last_saved_page = get_last_pdf_page(round_name)
+        if last_saved_page > 0:
+            st.info(f"💡 **[{round_name}]**은(는) 이전에 **{last_saved_page}페이지까지** 분석이 완료되었습니다. 다시 실행하면 다음 페이지부터 이어서 진행됩니다.")
+
+        if st.button(f"⚠️ [{round_name}]에 등록된 모든 문제 및 이어하기 기록 초기화하기"):
             reset_round_questions(round_name)
-            st.success(f"[{round_name}]의 모든 문제와 학습 기록이 깨끗하게 초기화되었습니다!")
+            st.success(f"[{round_name}]의 모든 데이터와 이어하기 기록이 초기화되었습니다!")
             st.toast("초기화 완료!", icon="🗑️")
+            st.rerun()
 
         st.markdown("---")
         upload_mode = st.radio("업로드 방식을 선택하세요:", ["기본 (문제+해설 일체형)", "고급 (문제지 + 해설지 분리 업로드)"], horizontal=True)
@@ -203,94 +212,94 @@ if check_password():
             if st.button("AI 분석 및 DB 저장"):
                 if uploaded_file:
                     total_count = 0
-                    duplicate_count = 0
                     
-                    # 1. PDF인 경우 2페이지씩 쪼개서 처리 + 중복 검사 자동 스킵
                     if uploaded_file.type == "application/pdf":
                         try:
                             pdf_reader = PdfReader(uploaded_file)
                             total_pages = len(pdf_reader.pages)
                             chunk_size = 2
                             
-                            progress_bar = st.progress(0)
-                            status_text = st.empty()
+                            # 이전에 중단된 페이지부터 시작
+                            start_from = get_last_pdf_page(round_name)
+                            if start_from >= total_pages:
+                                st.warning("이미 이 PDF의 모든 페이지가 처리가 완료되었습니다! 처음부터 다시 하려면 위에서 '기록 초기화'를 눌러주세요.")
+                            else:
+                                progress_bar = st.progress(start_from / total_pages)
+                                status_text = st.empty()
 
-                            for i in range(0, total_pages, chunk_size):
-                                start_p = i
-                                end_p = min(i + chunk_size, total_pages)
-                                
-                                status_text.text(f"PDF 안전 처리 중... ({start_p + 1} ~ {end_p}페이지 / 총 {total_pages}페이지)")
-                                progress_bar.progress((i + 1) / total_pages)
-
-                                pdf_writer = PdfWriter()
-                                for p_idx in range(start_p, end_p):
-                                    pdf_writer.add_page(pdf_reader.pages[p_idx])
-                                
-                                chunk_io = io.BytesIO()
-                                pdf_writer.write(chunk_io)
-                                chunk_bytes = chunk_io.getvalue()
-
-                                prompt_contents = [
-                                    {
-                                        "inline_data": {
-                                            "data": chunk_bytes,
-                                            "mime_type": "application/pdf"
-                                        }
-                                    },
-                                    """
-                                    이 PDF 구간(일부 페이지)에 포함된 모든 문제를 각각 독립적인 낱개 문제로 분리해서 추출해줘.
-                                    핵심 규칙: 
-                                    1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
-                                    2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
-                                    3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
-                                    4. "solution"에는 해설을 적어줘.
-                                    반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
-                                    [
-                                      {
-                                        "question_text": "문제 본문 내용",
-                                        "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
-                                        "answer": "①",
-                                        "solution": "해설 내용"
-                                      }
-                                    ]
-                                    """
-                                ]
-
-                                response = call_gemini_with_retry(client, prompt_contents)
-                                
-                                raw_text = response.text.strip()
-                                if raw_text.startswith("```json"): raw_text = raw_text[7:]
-                                if raw_text.startswith("```"): raw_text = raw_text[3:]
-                                if raw_text.endswith("```"): raw_text = raw_text[:-3]
-                                raw_text = raw_text.strip()
-
-                                questions_list = json.loads(raw_text)
-                                for q in questions_list:
-                                    q_text = q.get("question_text", "").strip()
-                                    opts = q.get("options", [])
-                                    full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
-                                    a_text = str(q.get("answer", "")).strip()
-                                    s_text = q.get("solution", "").strip()
+                                for i in range(start_from, total_pages, chunk_size):
+                                    start_p = i
+                                    end_p = min(i + chunk_size, total_pages)
                                     
-                                    if q_text:
-                                        # 중복 체크 후 저장
-                                        is_new = save_question_if_not_exists(round_name, full_content, a_text, s_text)
-                                        if is_new:
+                                    status_text.text(f"PDF 이어서 처리 중... ({start_p + 1} ~ {end_p}페이지 / 총 {total_pages}페이지)")
+                                    progress_bar.progress((start_p + 1) / total_pages)
+
+                                    pdf_writer = PdfWriter()
+                                    for p_idx in range(start_p, end_p):
+                                        pdf_writer.add_page(pdf_reader.pages[p_idx])
+                                    
+                                    chunk_io = io.BytesIO()
+                                    pdf_writer.write(chunk_io)
+                                    chunk_bytes = chunk_io.getvalue()
+
+                                    prompt_contents = [
+                                        {
+                                            "inline_data": {
+                                                "data": chunk_bytes,
+                                                "mime_type": "application/pdf"
+                                            }
+                                        },
+                                        """
+                                        이 PDF 구간(일부 페이지)에 포함된 모든 문제를 각각 독립적인 낱개 문제로 분리해서 추출해줘.
+                                        핵심 규칙: 
+                                        1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
+                                        2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
+                                        3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
+                                        4. "solution"에는 해설을 적어줘.
+                                        반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                        [
+                                          {
+                                            "question_text": "문제 본문 내용",
+                                            "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
+                                            "answer": "①",
+                                            "solution": "해설 내용"
+                                          }
+                                        ]
+                                        """
+                                    ]
+
+                                    response = call_gemini_with_retry(client, prompt_contents)
+                                    
+                                    raw_text = response.text.strip()
+                                    if raw_text.startswith("```json"): raw_text = raw_text[7:]
+                                    if raw_text.startswith("```"): raw_text = raw_text[3:]
+                                    if raw_text.endswith("```"): raw_text = raw_text[:-3]
+                                    raw_text = raw_text.strip()
+
+                                    questions_list = json.loads(raw_text)
+                                    for q in questions_list:
+                                        q_text = q.get("question_text", "").strip()
+                                        opts = q.get("options", [])
+                                        full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
+                                        a_text = str(q.get("answer", "")).strip()
+                                        s_text = q.get("solution", "").strip()
+                                        
+                                        if q_text:
+                                            save_question_direct(round_name, full_content, a_text, s_text)
                                             total_count += 1
-                                        else:
-                                            duplicate_count += 1
 
-                                time.sleep(1.5)
+                                    # 현재까지 안전하게 처리된 마지막 페이지 번호 저장
+                                    save_last_pdf_page(round_name, end_p)
+                                    time.sleep(1.5)
 
-                            progress_bar.empty()
-                            status_text.empty()
-                            st.success(f"🎉 신규 등록: {total_count}개 / 중복으로 건너뜀: {duplicate_count}개")
-                            st.toast("문제 등록 완료!", icon="✅")
+                                progress_bar.empty()
+                                status_text.empty()
+                                st.success(f"🎉 이어서 처리 완료! 추가 등록된 문제: {total_count}개")
+                                st.toast("문제 등록 완료!", icon="✅")
 
                         except Exception as e:
-                            st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
+                            st.error(f"AI 분석 중 오류가 발생했습니다: {e}. 다시 버튼을 누르면 이어서 진행됩니다.")
 
-                    # 2. 이미지 파일인 경우 (단건 처리)
                     else:
                         with st.spinner("AI가 이미지를 분석하고 보기를 분리하는 중..."):
                             try:
@@ -332,7 +341,6 @@ if check_password():
 
                                 questions_list = json.loads(raw_text)
                                 count = 0
-                                dup_count = 0
                                 for q in questions_list:
                                     q_text = q.get("question_text", "").strip()
                                     opts = q.get("options", [])
@@ -340,18 +348,17 @@ if check_password():
                                     a_text = str(q.get("answer", "")).strip()
                                     s_text = q.get("solution", "").strip()
                                     if q_text:
-                                        is_new = save_question_if_not_exists(round_name, full_content, a_text, s_text)
-                                        if is_new: count += 1
-                                        else: dup_count += 1
+                                        save_question_direct(round_name, full_content, a_text, s_text)
+                                        count += 1
 
-                                st.success(f"🎉 신규 등록: {count}개 / 중복 건너뜀: {dup_count}개")
+                                st.success(f"🎉 신규 등록: {count}개")
                                 st.toast("문제 등록 완료!", icon="✅")
                             except Exception as e:
                                 st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
                 else:
                     st.warning("파일을 업로드해주세요.")
         
-        else: # 고급 분리 업로드 (문제지+해설지)
+        else:
             st.info("💡 문제지와 해설지가 따로 있는 경우, AI가 두 파일을 대조해 자동 매칭합니다.")
             col1, col2 = st.columns(2)
             with col1: q_file = st.file_uploader("1. 문제지 파일", type=["jpg", "jpeg", "png", "pdf"])
@@ -408,7 +415,6 @@ if check_password():
 
                             questions_list = json.loads(raw_text)
                             count = 0
-                            dup_count = 0
                             for q in questions_list:
                                 q_text = q.get("question_text", "").strip()
                                 opts = q.get("options", [])
@@ -416,18 +422,16 @@ if check_password():
                                 a_text = str(q.get("answer", "")).strip()
                                 s_text = q.get("solution", "").strip()
                                 if q_text:
-                                    is_new = save_question_if_not_exists(round_name, full_content, a_text, s_text)
-                                    if is_new: count += 1
-                                    else: dup_count += 1
+                                    save_question_direct(round_name, full_content, a_text, s_text)
+                                    count += 1
 
-                            st.success(f"🎉 신규 등록: {count}개 / 중복 건너뜀: {dup_count}개")
+                            st.success(f"🎉 신규 등록: {count}개")
                             st.toast("자동 매칭 완료!", icon="✨")
                         except Exception as e:
                             st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
                 else:
                     st.warning("두 파일을 모두 업로드해주세요.")
 
-        # --- 데이터 백업 및 복구 구역 ---
         st.markdown("---")
         st.subheader("💾 데이터 백업 및 복구 (서버 초기화 대비)")
         
@@ -456,7 +460,6 @@ if check_password():
                 except Exception as e:
                     st.error(f"복구 중 오류가 발생했습니다: {e}")
 
-    # ================= 2. 회차별 시험 =================
     elif menu == "회차별 시험":
         st.header("🎯 회차별 시험 풀기")
         selected_round = st.selectbox("풀어볼 회차 선택", ROUND_OPTIONS)
@@ -550,7 +553,6 @@ if check_password():
                     st.balloons()
                     st.metric(label=f"{selected_round} 최종 성적", value=f"{score} / {total_q} 문항 정답")
 
-    # ================= 3. 오답 노트 =================
     elif menu == "오답 노트":
         st.header("📝 오답 노트")
         conn = sqlite3.connect(DB_FILE)
@@ -617,7 +619,6 @@ if check_password():
                         st.error(f"오답입니다! (선택한 답: {ans}) / 정답: {correct_ans}")
                         st.info(f"해설: {solution}")
 
-    # ================= 4. 문제 관리/수정 =================
     elif menu == "문제 관리/수정":
         st.header("🛠 문제 내용 및 정답/해설 수정")
         st.info("문제를 개별적으로 관리하고, 보기를 선택해 정답을 간편하게 수정할 수 있습니다.")
