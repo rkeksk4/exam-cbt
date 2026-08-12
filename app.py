@@ -4,6 +4,7 @@ import sqlite3
 import json
 import os
 import io
+import time
 from pypdf import PdfReader, PdfWriter
 
 # --- 페이지 설정 ---
@@ -17,7 +18,6 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 회차 리스트 (1~12회차)
 ROUND_OPTIONS = [f"{i}회차" for i in range(1, 13)]
 DB_FILE = "question_bank.db"
 
@@ -130,6 +130,27 @@ def reset_round_questions(round_name):
     conn.commit()
     conn.close()
 
+# --- 503 및 과부하 방지용 재시도(Retry) 래퍼 함수 ---
+def call_gemini_with_retry(client, contents, max_retries=5, initial_delay=3):
+    """503 에러나 일시적 서버 과부하시 대기 시간을 늘려가며 재시도"""
+    delay = initial_delay
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=contents
+            )
+            return response
+        except Exception as e:
+            error_str = str(e)
+            if "503" in error_str or "UNAVAILABLE" in error_str or "429" in error_str:
+                if attempt == max_retries - 1:
+                    raise e
+                time.sleep(delay)
+                delay *= 2  # 실패할 경우 대기 시간을 3초 -> 6초 -> 12초로 배가시킴
+            else:
+                raise e
+
 def check_password():
     if "password_correct" not in st.session_state: st.session_state["password_correct"] = False
     if not st.session_state["password_correct"]:
@@ -166,12 +187,12 @@ if check_password():
                 if uploaded_file:
                     total_count = 0
                     
-                    # 1. 파일이 PDF인 경우 5페이지씩 쪼개서 순차 처리
+                    # 1. PDF인 경우 2페이지씩 아주 잘게 쪼개서 순차 처리 (부하 최소화)
                     if uploaded_file.type == "application/pdf":
                         try:
                             pdf_reader = PdfReader(uploaded_file)
                             total_pages = len(pdf_reader.pages)
-                            chunk_size = 5
+                            chunk_size = 2  # 5장에서 2장 단위로 축소
                             
                             progress_bar = st.progress(0)
                             status_text = st.empty()
@@ -180,10 +201,9 @@ if check_password():
                                 start_p = i
                                 end_p = min(i + chunk_size, total_pages)
                                 
-                                status_text.text(f"PDF 처리 중... ({start_p + 1} ~ {end_p}페이지 / 총 {total_pages}페이지)")
+                                status_text.text(f"PDF 안전 처리 중... ({start_p + 1} ~ {end_p}페이지 / 총 {total_pages}페이지)")
                                 progress_bar.progress((i + 1) / total_pages)
 
-                                # 5페이지씩 잘라서 새로운 PDF 바이트 생성
                                 pdf_writer = PdfWriter()
                                 for p_idx in range(start_p, end_p):
                                     pdf_writer.add_page(pdf_reader.pages[p_idx])
@@ -192,35 +212,34 @@ if check_password():
                                 pdf_writer.write(chunk_io)
                                 chunk_bytes = chunk_io.getvalue()
 
-                                # AI 요청
-                                response = client.models.generate_content(
-                                    model="gemini-3.6-flash",
-                                    contents=[
-                                        {
-                                            "inline_data": {
-                                                "data": chunk_bytes,
-                                                "mime_type": "application/pdf"
-                                            }
-                                        },
-                                        """
-                                        이 PDF 구간(일부 페이지)에 포함된 모든 문제를 각각 독립적인 낱개 문제로 분리해서 추출해줘.
-                                        핵심 규칙: 
-                                        1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
-                                        2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
-                                        3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
-                                        4. "solution"에는 해설을 적어줘.
-                                        반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
-                                        [
-                                          {
-                                            "question_text": "문제 본문 내용",
-                                            "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
-                                            "answer": "①",
-                                            "solution": "해설 내용"
-                                          }
-                                        ]
-                                        """
+                                prompt_contents = [
+                                    {
+                                        "inline_data": {
+                                            "data": chunk_bytes,
+                                            "mime_type": "application/pdf"
+                                        }
+                                    },
+                                    """
+                                    이 PDF 구간(일부 페이지)에 포함된 모든 문제를 각각 독립적인 낱개 문제로 분리해서 추출해줘.
+                                    핵심 규칙: 
+                                    1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
+                                    2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
+                                    3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
+                                    4. "solution"에는 해설을 적어줘.
+                                    반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                    [
+                                      {
+                                        "question_text": "문제 본문 내용",
+                                        "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
+                                        "answer": "①",
+                                        "solution": "해설 내용"
+                                      }
                                     ]
-                                )
+                                    """
+                                ]
+
+                                response = call_gemini_with_retry(client, prompt_contents)
+                                
                                 raw_text = response.text.strip()
                                 if raw_text.startswith("```json"): raw_text = raw_text[7:]
                                 if raw_text.startswith("```"): raw_text = raw_text[3:]
@@ -238,6 +257,9 @@ if check_password():
                                         save_question(round_name, full_content, a_text, s_text)
                                         total_count += 1
 
+                                # 각 2페이지 처리 직후 서버 안정화를 위해 2초 대기
+                                time.sleep(2.0)
+
                             progress_bar.empty()
                             status_text.empty()
                             st.success(f"🎉 총 {total_count}개의 문제가 성공적으로 등록되었습니다!")
@@ -246,41 +268,40 @@ if check_password():
                         except Exception as e:
                             st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
 
-                    # 2. 이미지고 파일인 경우 (기존 방식 단건 처리)
+                    # 2. 이미지 파일인 경우 (단건 처리)
                     else:
                         with st.spinner("AI가 이미지를 분석하고 보기를 분리하는 중..."):
                             try:
                                 file_bytes = uploaded_file.getvalue()
                                 mime_type = uploaded_file.type
 
-                                response = client.models.generate_content(
-                                    model="gemini-3.6-flash",
-                                    contents=[
-                                        {
-                                            "inline_data": {
-                                                "data": file_bytes,
-                                                "mime_type": mime_type
-                                            }
-                                        },
-                                        """
-                                        이 이미지에 포함된 모든 문제를 각각 독립적인 낱개 문제로 완벽하게 분리해서 추출해줘.
-                                        핵심 규칙: 
-                                        1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
-                                        2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
-                                        3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
-                                        4. "solution"에는 해설을 적어줘.
-                                        반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
-                                        [
-                                          {
-                                            "question_text": "문제 본문 내용",
-                                            "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
-                                            "answer": "①",
-                                            "solution": "해설 내용"
-                                          }
-                                        ]
-                                        """
+                                prompt_contents = [
+                                    {
+                                        "inline_data": {
+                                            "data": file_bytes,
+                                            "mime_type": mime_type
+                                        }
+                                    },
+                                    """
+                                    이 이미지에 포함된 모든 문제를 각각 독립적인 낱개 문제로 완벽하게 분리해서 추출해줘.
+                                    핵심 규칙: 
+                                    1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
+                                    2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
+                                    3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
+                                    4. "solution"에는 해설을 적어줘.
+                                    반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                    [
+                                      {
+                                        "question_text": "문제 본문 내용",
+                                        "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
+                                        "answer": "①",
+                                        "solution": "해설 내용"
+                                      }
                                     ]
-                                )
+                                    """
+                                ]
+
+                                response = call_gemini_with_retry(client, prompt_contents)
                                 raw_text = response.text.strip()
                                 if raw_text.startswith("```json"): raw_text = raw_text[7:]
                                 if raw_text.startswith("```"): raw_text = raw_text[3:]
@@ -316,47 +337,45 @@ if check_password():
                 if q_file and s_file:
                     with st.spinner("AI가 문제지와 해설지를 매칭하는 중... (대용량 파일일 경우 시간이 걸릴 수 있습니다)"):
                         try:
-                            # 고급 모드는 단건으로 처리하되, 503 방지를 위해 이미지 위주 처리 권장 (PDF는 기본 일체형 권장)
                             q_bytes = q_file.getvalue()
                             q_mime = q_file.type
                             s_bytes = s_file.getvalue()
                             s_mime = s_file.type
 
-                            response = client.models.generate_content(
-                                model="gemini-3.6-flash",
-                                contents=[
-                                    {
-                                        "inline_data": {
-                                            "data": q_bytes,
-                                            "mime_type": q_mime
-                                        }
-                                    },
-                                    {
-                                        "inline_data": {
-                                            "data": s_bytes,
-                                            "mime_type": s_mime
-                                        }
-                                    },
-                                    """
-                                    첫 번째로 제공된 자료는 '문제지'이고, 두 번째로 제공된 자료는 '해설지'야.
-                                    이 두 자료를 상호 대조하여 각 문제 번호에 맞는 정답과 해설을 정확하게 찾아내어 완전한 세트로 구성해줘.
-                                    핵심 규칙: 
-                                    1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
-                                    2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
-                                    3. "answer"에는 해설지/정답지를 참고하여 정확한 정답 번호나 내용 (예: "①" 또는 "1")을 적어줘.
-                                    4. "solution"에는 해당 문제의 해설 내용을 적어줘.
-                                    반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
-                                    [
-                                      {
-                                        "question_text": "문제 본문 내용",
-                                        "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
-                                        "answer": "①",
-                                        "solution": "해설 내용"
-                                      }
-                                    ]
-                                    """
+                            prompt_contents = [
+                                {
+                                    "inline_data": {
+                                        "data": q_bytes,
+                                        "mime_type": q_mime
+                                    }
+                                },
+                                {
+                                    "inline_data": {
+                                        "data": s_bytes,
+                                        "mime_type": s_mime
+                                    }
+                                },
+                                """
+                                첫 번째로 제공된 자료는 '문제지'이고, 두 번째로 제공된 자료는 '해설지'야.
+                                이 두 자료를 상호 대조하여 각 문제 번호에 맞는 정답과 해설을 정확하게 찾아내어 완전한 세트로 구성해줘.
+                                핵심 규칙: 
+                                1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
+                                2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
+                                3. "answer"에는 해설지/정답지를 참고하여 정확한 정답 번호나 내용 (예: "①" 또는 "1")을 적어줘.
+                                4. "solution"에는 해당 문제의 해설 내용을 적어줘.
+                                반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                [
+                                  {
+                                    "question_text": "문제 본문 내용",
+                                    "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
+                                    "answer": "①",
+                                    "solution": "해설 내용"
+                                  }
                                 ]
-                            )
+                                """
+                            ]
+
+                            response = call_gemini_with_retry(client, prompt_contents)
                             raw_text = response.text.strip()
                             if raw_text.startswith("```json"): raw_text = raw_text[7:]
                             if raw_text.startswith("```"): raw_text = raw_text[3:]
