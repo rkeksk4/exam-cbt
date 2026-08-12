@@ -50,11 +50,19 @@ def save_question(round_name, content, answer, solution):
     conn.commit()
     conn.close()
 
-def update_question(q_id, content, answer, solution):
+def update_question_content_and_solution(q_id, content, solution):
     conn = sqlite3.connect("question_bank.db")
     c = conn.cursor()
-    c.execute("UPDATE questions SET content=?, correct_answer=?, solution=? WHERE id=?", 
-              (content, answer, solution, q_id))
+    c.execute("UPDATE questions SET content=?, solution=? WHERE id=?", 
+              (content, solution, q_id))
+    conn.commit()
+    conn.close()
+
+def update_question_answer(q_id, answer):
+    conn = sqlite3.connect("question_bank.db")
+    c = conn.cursor()
+    c.execute("UPDATE questions SET correct_answer=? WHERE id=?", 
+              (answer, q_id))
     conn.commit()
     conn.close()
 
@@ -119,12 +127,9 @@ def clear_progress(round_name):
 def reset_round_questions(round_name):
     conn = sqlite3.connect("question_bank.db")
     c = conn.cursor()
-    # 해당 회차에 속한 문제들의 ID 조회
     q_ids = [row[0] for row in c.execute("SELECT id FROM questions WHERE round = ?", (round_name,)).fetchall()]
     if q_ids:
-        # 오답 노트 및 오답 진행 상황에서 해당 문제들 제거
         c.execute(f"DELETE FROM wrong_progress WHERE question_id IN ({','.join(['?']*len(q_ids))})", q_ids)
-    # 해당 회차 문제 및 진행 기록 삭제
     c.execute("DELETE FROM questions WHERE round = ?", (round_name,))
     c.execute("DELETE FROM user_progress WHERE round = ?", (round_name,))
     conn.commit()
@@ -395,7 +400,7 @@ if check_password():
     # ================= 4. 문제 관리/수정 =================
     elif menu == "문제 관리/수정":
         st.header("🛠 문제 내용 및 정답/해설 수정")
-        st.info("문제를 개별적으로 관리하고 수정할 수 있습니다.")
+        st.info("문제를 개별적으로 관리하고, 보기를 선택해 정답을 간편하게 수정할 수 있습니다.")
         
         conn = sqlite3.connect("question_bank.db")
         questions = conn.execute("SELECT * FROM questions").fetchall()
@@ -405,18 +410,58 @@ if check_password():
             st.info("수정할 문제가 없습니다.")
         else:
             for q in questions:
-                try:
-                    cd = json.loads(q[2])
-                    display_content = cd.get("question", q[2])
-                except:
-                    display_content = q[2]
+                q_id = q[0]
+                round_name = q[1]
+                raw_content = q[2]
+                current_ans = q[3]
+                current_sol = q[4]
 
-                with st.expander(f"[{q[1]}] 문제 ID: {q[0]} 수정하기"):
-                    new_content = st.text_area("문제 내용", value=display_content, key=f"c_{q[0]}")
-                    new_ans = st.text_input("정답", value=q[3], key=f"a_{q[0]}")
-                    new_sol = st.text_area("해설", value=q[4], key=f"s_{q[0]}")
+                try:
+                    cd = json.loads(raw_content)
+                    q_text = cd.get("question", raw_content)
+                    options = cd.get("options", [])
+                except:
+                    q_text = raw_content
+                    options = []
+
+                with st.expander(f"[{round_name}] 문제 ID: {q_id} 수정하기"):
+                    # 1. 문제 내용 수정
+                    new_content_text = st.text_area("문제 내용", value=q_text, key=f"c_text_{q_id}")
                     
-                    if st.button(f"변경사항 저장 (ID: {q[0]})", key=f"save_{q[0]}"):
-                        update_question(q[0], new_content, new_ans, new_sol)
-                        st.success("성공적으로 수정되었습니다!")
+                    # 2. 해설 수정
+                    new_sol = st.text_area("해설 수정", value=current_sol, key=f"s_{q_id}")
+                    
+                    if st.button(f"문제 내용 및 해설 저장 (ID: {q_id})", key=f"save_content_{q_id}"):
+                        updated_full_content = json.dumps({"question": new_content_text, "options": options}, ensure_ascii=False)
+                        update_question_content_and_solution(q_id, updated_full_content, new_sol)
+                        st.success("문제 내용과 해설이 수정되었습니다!")
                         st.rerun()
+
+                    st.markdown("---")
+                    st.markdown(f"**현재 설정된 정답:** `{current_ans}`")
+
+                    # 3. 보기를 직접 선택하여 정답 수정
+                    if options:
+                        ans_default_idx = 0
+                        for i, opt in enumerate(options):
+                            if current_ans.strip() in opt or (opt.strip() and current_ans.strip()[:1] == opt.strip()[:1]):
+                                ans_default_idx = i
+                                break
+
+                        selected_new_ans = st.radio(
+                            "정답으로 지정할 보기 선택", 
+                            options, 
+                            index=ans_default_idx, 
+                            key=f"edit_ans_radio_{q_id}"
+                        )
+                        
+                        if st.button(f"선택한 보기로 정답 변경 (ID: {q_id})", key=f"save_ans_{q_id}"):
+                            update_question_answer(q_id, selected_new_ans)
+                            st.success(f"정답이 '{selected_new_ans}'로 변경되었습니다!")
+                            st.rerun()
+                    else:
+                        new_ans_text = st.text_input("정답 직접 입력", value=current_ans, key=f"edit_ans_input_{q_id}")
+                        if st.button(f"정답 변경 (ID: {q_id})", key=f"save_ans_txt_{q_id}"):
+                            update_question_answer(q_id, new_ans_text)
+                            st.success("정답이 변경되었습니다!")
+                            st.rerun()
