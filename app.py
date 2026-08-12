@@ -2,6 +2,7 @@ import streamlit as st
 from google import genai
 import sqlite3
 import json
+import os
 
 # --- 페이지 설정 ---
 st.set_page_config(page_title="나만의 영구 문제은행", layout="centered")
@@ -16,10 +17,11 @@ st.markdown("""
 
 # 회차 리스트 (1~12회차)
 ROUND_OPTIONS = [f"{i}회차" for i in range(1, 13)]
+DB_FILE = "question_bank.db"
 
 # --- 데이터베이스(DB) 초기화 ---
 def init_db():
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS questions 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -45,9 +47,8 @@ def init_db():
 
 init_db()
 
-# ... (기존 DB 함수들 생략: 동일함)
 def save_question(round_name, content, answer, solution):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("INSERT INTO questions (round, content, correct_answer, solution, is_wrong) VALUES (?, ?, ?, ?, 0)", 
               (round_name, content, answer, solution))
@@ -55,21 +56,21 @@ def save_question(round_name, content, answer, solution):
     conn.close()
 
 def update_question_content_and_solution(q_id, content, solution):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("UPDATE questions SET content=?, solution=? WHERE id=?", (content, solution, q_id))
     conn.commit()
     conn.close()
 
 def update_question_answer(q_id, answer):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("UPDATE questions SET correct_answer=? WHERE id=?", (answer, q_id))
     conn.commit()
     conn.close()
 
 def mark_wrong(q_id, status):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("UPDATE questions SET is_wrong = ? WHERE id = ?", (status, q_id))
     if status == 0: c.execute("DELETE FROM wrong_progress WHERE question_id = ?", (q_id,))
@@ -77,7 +78,7 @@ def mark_wrong(q_id, status):
     conn.close()
 
 def load_progress(round_name, q_id):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT user_answer, is_graded FROM user_progress WHERE round = ? AND question_id = ?", (round_name, q_id))
     row = c.fetchone()
@@ -85,7 +86,7 @@ def load_progress(round_name, q_id):
     return (row[0], bool(row[1])) if row else (None, False)
 
 def save_progress(round_name, q_id, user_answer, is_graded):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''INSERT INTO user_progress (round, question_id, user_answer, is_graded) VALUES (?, ?, ?, ?) 
                  ON CONFLICT(round, question_id) DO UPDATE SET user_answer = ?, is_graded = ?''', 
@@ -94,7 +95,7 @@ def save_progress(round_name, q_id, user_answer, is_graded):
     conn.close()
 
 def load_wrong_progress(q_id):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT user_answer, is_graded FROM wrong_progress WHERE question_id = ?", (q_id,))
     row = c.fetchone()
@@ -102,7 +103,7 @@ def load_wrong_progress(q_id):
     return (row[0], bool(row[1])) if row else (None, False)
 
 def save_wrong_progress(q_id, user_answer, is_graded):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''INSERT INTO wrong_progress (question_id, user_answer, is_graded) VALUES (?, ?, ?) 
                  ON CONFLICT(question_id) DO UPDATE SET user_answer = ?, is_graded = ?''', 
@@ -111,14 +112,14 @@ def save_wrong_progress(q_id, user_answer, is_graded):
     conn.close()
 
 def clear_progress(round_name):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("DELETE FROM user_progress WHERE round = ?", (round_name,))
     conn.commit()
     conn.close()
 
 def reset_round_questions(round_name):
-    conn = sqlite3.connect("question_bank.db")
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     q_ids = [row[0] for row in c.execute("SELECT id FROM questions WHERE round = ?", (round_name,)).fetchall()]
     if q_ids: c.execute(f"DELETE FROM wrong_progress WHERE question_id IN ({','.join(['?']*len(q_ids))})", q_ids)
@@ -144,6 +145,7 @@ if check_password():
     st.sidebar.title("📚 학습 메뉴")
     menu = st.sidebar.radio("이동할 메뉴", ["문제 등록", "회차별 시험", "오답 노트", "문제 관리/수정"])
 
+    # ================= 1. 문제 등록 =================
     if menu == "문제 등록":
         st.header("📌 신규 문제 등록")
         round_name = st.selectbox("회차 선택", ROUND_OPTIONS)
@@ -160,14 +162,62 @@ if check_password():
             uploaded_file = st.file_uploader("문제 사진 또는 PDF 업로드", type=["jpg", "jpeg", "png", "pdf"])
             if st.button("AI 분석 및 DB 저장"):
                 if uploaded_file:
-                    with st.spinner("분석 중..."):
-                        # (AI 호출부 코드 생략 - 이전 버전과 동일)
+                    with st.spinner("AI가 문제를 분석하고 보기를 분리하는 중..."):
                         try:
-                            # ... (생략된 AI 호출 코드 동일)
-                            # ... (데이터 저장 로직 동일)
-                            st.success("등록 완료!")
-                        except Exception as e: st.error(f"오류: {e}")
-                else: st.warning("파일을 업로드해주세요.")
+                            file_bytes = uploaded_file.getvalue()
+                            mime_type = uploaded_file.type
+
+                            response = client.models.generate_content(
+                                model="gemini-2.5-flash",
+                                contents=[
+                                    {
+                                        "inline_data": {
+                                            "data": file_bytes,
+                                            "mime_type": mime_type
+                                        }
+                                    },
+                                    """
+                                    이 자료(이미지/PDF)에 포함된 모든 문제를 각각 독립적인 낱개 문제로 완벽하게 분리해서 추출해줘.
+                                    핵심 규칙: 
+                                    1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
+                                    2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
+                                    3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
+                                    4. "solution"에는 해설을 적어줘.
+                                    반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                    [
+                                      {
+                                        "question_text": "문제 본문 내용",
+                                        "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
+                                        "answer": "①",
+                                        "solution": "해설 내용"
+                                      }
+                                    ]
+                                    """
+                                ]
+                            )
+                            raw_text = response.text.strip()
+                            if raw_text.startswith("```json"): raw_text = raw_text[7:]
+                            if raw_text.startswith("```"): raw_text = raw_text[3:]
+                            if raw_text.endswith("```"): raw_text = raw_text[:-3]
+                            raw_text = raw_text.strip()
+
+                            questions_list = json.loads(raw_text)
+                            count = 0
+                            for q in questions_list:
+                                q_text = q.get("question_text", "").strip()
+                                opts = q.get("options", [])
+                                full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
+                                a_text = str(q.get("answer", "")).strip()
+                                s_text = q.get("solution", "").strip()
+                                if q_text:
+                                    save_question(round_name, full_content, a_text, s_text)
+                                    count += 1
+
+                            st.success(f"총 {count}개의 문제가 성공적으로 등록되었습니다!")
+                        except Exception as e:
+                            st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
+                else:
+                    st.warning("파일을 업로드해주세요.")
         
         else: # 고급 분리 업로드
             st.info("💡 문제지와 해설지가 따로 있는 경우, AI가 두 파일을 대조해 자동 매칭합니다.")
@@ -178,46 +228,129 @@ if check_password():
             if st.button("문제+해설 동시 분석 및 자동 매칭"):
                 if q_file and s_file:
                     with st.spinner("AI가 문제지와 해설지를 매칭하는 중..."):
-                        # (AI 호출부 및 저장 로직 동일 - 위와 동일)
-                        st.success("자동 매칭 완료!")
-                else: st.warning("두 파일을 모두 업로드해주세요.")
+                        try:
+                            q_bytes = q_file.getvalue()
+                            q_mime = q_file.type
+                            s_bytes = s_file.getvalue()
+                            s_mime = s_file.type
+
+                            response = client.models.generate_content(
+                                model="gemini-2.5-flash",
+                                contents=[
+                                    {
+                                        "inline_data": {
+                                            "data": q_bytes,
+                                            "mime_type": q_mime
+                                        }
+                                    },
+                                    {
+                                        "inline_data": {
+                                            "data": s_bytes,
+                                            "mime_type": s_mime
+                                        }
+                                    },
+                                    """
+                                    첫 번째로 제공된 자료는 '문제지'이고, 두 번째로 제공된 자료는 '해설지'야.
+                                    이 두 자료를 상호 대조하여 각 문제 번호에 맞는 정답과 해설을 정확하게 찾아내어 완전한 세트로 구성해줘.
+                                    핵심 규칙: 
+                                    1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
+                                    2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
+                                    3. "answer"에는 해설지/정답지를 참고하여 정확한 정답 번호나 내용 (예: "①" 또는 "1")을 적어줘.
+                                    4. "solution"에는 해당 문제의 해설 내용을 적어줘.
+                                    반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                    [
+                                      {
+                                        "question_text": "문제 본문 내용",
+                                        "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
+                                        "answer": "①",
+                                        "solution": "해설 내용"
+                                      }
+                                    ]
+                                    """
+                                ]
+                            )
+                            raw_text = response.text.strip()
+                            if raw_text.startswith("```json"): raw_text = raw_text[7:]
+                            if raw_text.startswith("```"): raw_text = raw_text[3:]
+                            if raw_text.endswith("```"): raw_text = raw_text[:-3]
+                            raw_text = raw_text.strip()
+
+                            questions_list = json.loads(raw_text)
+                            count = 0
+                            for q in questions_list:
+                                q_text = q.get("question_text", "").strip()
+                                opts = q.get("options", [])
+                                full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
+                                a_text = str(q.get("answer", "")).strip()
+                                s_text = q.get("solution", "").strip()
+                                if q_text:
+                                    save_question(round_name, full_content, a_text, s_text)
+                                    count += 1
+
+                            st.success(f"총 {count}개의 문제가 자동 매칭을 통해 등록되었습니다!")
+                        except Exception as e:
+                            st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
+                else:
+                    st.warning("두 파일을 모두 업로드해주세요.")
+
+        # --- 데이터 백업 및 복구 구역 추가 ---
+        st.markdown("---")
+        st.subheader("💾 데이터 백업 및 복구 (서버 초기화 대비)")
+        
+        # 1. 백업 버튼
+        if os.path.exists(DB_FILE):
+            with open(DB_FILE, "rb") as f:
+                db_bytes = f.read()
+            st.download_button(
+                label="📥 현재 문제 데이터 백업하기 (.db 다운로드)",
+                data=db_bytes,
+                file_name="question_bank.db",
+                mime="application/x-sqlite3"
+            )
+
+        # 2. 복구 업로더
+        uploaded_db = st.file_uploader("📤 백업해둔 DB 파일 업로드하여 복구하기", type=["db"])
+        if uploaded_db is not None:
+            if st.button("🔄 데이터 복구 적용하기"):
+                try:
+                    with open(DB_FILE, "wb") as f:
+                        f.write(uploaded_db.getbuffer())
+                    st.success("데이터가 성공적으로 복구되었습니다! 잠시 후 새로고침됩니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"복구 중 오류가 발생했습니다: {e}")
 
     # ================= 2. 회차별 시험 =================
     elif menu == "회차별 시험":
         st.header("🎯 회차별 시험 풀기")
-        conn = sqlite3.connect("question_bank.db")
-        rounds = [r[0] for r in conn.execute("SELECT DISTINCT round FROM questions").fetchall()]
-        conn.close()
+        selected_round = st.selectbox("풀어볼 회차 선택", ROUND_OPTIONS)
         
-        if not rounds:
-            st.info("등록된 문제가 없습니다. '문제 등록' 메뉴에서 먼저 문제를 추가해주세요.")
-        else:
-            selected_round = st.selectbox("풀어볼 회차 선택", rounds)
-            
-            conn = sqlite3.connect("question_bank.db")
-            has_history = conn.execute("SELECT COUNT(*) FROM user_progress WHERE round = ?", (selected_round,)).fetchone()[0] > 0
+        conn = sqlite3.connect(DB_FILE)
+        has_history = conn.execute("SELECT COUNT(*) FROM user_progress WHERE round = ?", (selected_round,)).fetchone()[0] > 0
+        conn.close()
+
+        mode = "이어서 풀기"
+        if has_history:
+            st.markdown("---")
+            st.info(f"📌 **{selected_round}**에 이전에 풀던 기록이 존재합니다.")
+            mode = st.radio("학습 방식을 선택하세요:", ["이어서 풀기", "처음부터 새로 풀기"], horizontal=True, key="mode_select")
+            if mode == "처음부터 새로 풀기":
+                if st.button("🔄 기존 기록 초기화하고 새로 시작하기"):
+                    clear_progress(selected_round)
+                    st.success("기록이 초기화되었습니다!")
+                    st.rerun()
+
+        if mode == "이어서 풀기" or not has_history:
+            conn = sqlite3.connect(DB_FILE)
+            questions = conn.execute("SELECT * FROM questions WHERE round = ?", (selected_round,)).fetchall()
             conn.close()
 
-            mode = "이어서 풀기"
-            if has_history:
-                st.markdown("---")
-                st.info(f"📌 **{selected_round}**에 이전에 풀던 기록이 존재합니다.")
-                mode = st.radio("학습 방식을 선택하세요:", ["이어서 풀기", "처음부터 새로 풀기"], horizontal=True, key="mode_select")
-                
-                if mode == "처음부터 새로 풀기":
-                    if st.button("🔄 기존 기록 초기화하고 새로 시작하기"):
-                        clear_progress(selected_round)
-                        st.success("기록이 초기화되었습니다. 잠시 후 새로 시작합니다!")
-                        st.rerun()
+            score = 0
+            total_q = len(questions)
 
-            if mode == "이어서 풀기" or not has_history:
-                conn = sqlite3.connect("question_bank.db")
-                questions = conn.execute("SELECT * FROM questions WHERE round = ?", (selected_round,)).fetchall()
-                conn.close()
-
-                score = 0
-                total_q = len(questions)
-
+            if not questions:
+                st.info("해당 회차에 등록된 문제가 없습니다.")
+            else:
                 for idx, q in enumerate(questions):
                     q_id = q[0]
                     raw_content = q[2]
@@ -263,7 +396,6 @@ if check_password():
 
                     if saved_graded and ans:
                         is_correct = (ans.strip() == correct_ans.strip()) or (ans.strip()[:1] == correct_ans.strip()[:1])
-                        
                         if is_correct:
                             st.success(f"정답입니다! (선택한 답: {ans})")
                             score += 1
@@ -281,7 +413,7 @@ if check_password():
     # ================= 3. 오답 노트 =================
     elif menu == "오답 노트":
         st.header("📝 오답 노트")
-        conn = sqlite3.connect("question_bank.db")
+        conn = sqlite3.connect(DB_FILE)
         wrongs = conn.execute("SELECT * FROM questions WHERE is_wrong = 1").fetchall()
         conn.close()
 
@@ -335,7 +467,6 @@ if check_password():
 
                 if saved_graded and ans:
                     is_correct = (ans.strip() == correct_ans.strip()) or (ans.strip()[:1] == correct_ans.strip()[:1])
-                    
                     if is_correct:
                         st.success(f"정답입니다! 🎉 완벽하게 이해하셨네요.")
                         mark_wrong(q_id, 0)
@@ -350,7 +481,7 @@ if check_password():
         st.header("🛠 문제 내용 및 정답/해설 수정")
         st.info("문제를 개별적으로 관리하고, 보기를 선택해 정답을 간편하게 수정할 수 있습니다.")
         
-        conn = sqlite3.connect("question_bank.db")
+        conn = sqlite3.connect(DB_FILE)
         questions = conn.execute("SELECT * FROM questions").fetchall()
         conn.close()
 
