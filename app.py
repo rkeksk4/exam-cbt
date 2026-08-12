@@ -284,7 +284,7 @@ if check_password():
 
                             progress_bar.empty()
                             status_text.empty()
-                            st.success(f"🎉 신규 등록: {total_count개 / 중복으로 건너뜀: {duplicate_count}개}")
+                            st.success(f"🎉 신규 등록: {total_count}개 / 중복으로 건너뜀: {duplicate_count}개")
                             st.toast("문제 등록 완료!", icon="✅")
 
                         except Exception as e:
