@@ -168,7 +168,7 @@ if check_password():
                             mime_type = uploaded_file.type
 
                             response = client.models.generate_content(
-                                model="gemini-2.5-flash",
+                                model="gemini-3.6-flash",
                                 contents=[
                                     {
                                         "inline_data": {
@@ -235,7 +235,7 @@ if check_password():
                             s_mime = s_file.type
 
                             response = client.models.generate_content(
-                                model="gemini-2.5-flash",
+                                model="gemini-3.6-flash",
                                 contents=[
                                     {
                                         "inline_data": {
