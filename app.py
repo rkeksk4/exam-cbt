@@ -49,13 +49,31 @@ def init_db():
 
 init_db()
 
-def save_question(round_name, content, answer, solution):
+def save_question_if_not_exists(round_name, q_text, answer, solution):
+    """중복 문제 저장을 방지하기 위해 내용이 완전히 일치하는 문제가 이미 있으면 저장하지 않음"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    
+    # 해당 회차의 모든 문제 본문을 가져와서 검사
+    existing_questions = c.execute("SELECT content FROM questions WHERE round = ?", (round_name,)).fetchall()
+    
+    for row in existing_questions:
+        try:
+            content_dict = json.loads(row[0])
+            existing_q_text = content_dict.get("question", "").strip()
+            # 텍스트가 80% 이상 유사하거나 완전히 같으면 중복으로 판단하여 스킵
+            if existing_q_text == q_text.strip():
+                conn.close()
+                return False  # 이미 존재함 (저장 안 함)
+        except:
+            pass
+
+    # 중복이 없으면 새로 저장
     c.execute("INSERT INTO questions (round, content, correct_answer, solution, is_wrong) VALUES (?, ?, ?, ?, 0)", 
-              (round_name, content, answer, solution))
+              (round_name, q_text, answer, solution))
     conn.commit()
     conn.close()
+    return True  # 새로 저장됨
 
 def update_question_content_and_solution(q_id, content, solution):
     conn = sqlite3.connect(DB_FILE)
@@ -130,9 +148,8 @@ def reset_round_questions(round_name):
     conn.commit()
     conn.close()
 
-# --- 503 및 과부하 방지용 재시도(Retry) 래퍼 함수 ---
+# --- 503 및 과부하 방지용 재시도 래퍼 함수 ---
 def call_gemini_with_retry(client, contents, max_retries=5, initial_delay=3):
-    """503 에러나 일시적 서버 과부하시 대기 시간을 늘려가며 재시도"""
     delay = initial_delay
     for attempt in range(max_retries):
         try:
@@ -147,7 +164,7 @@ def call_gemini_with_retry(client, contents, max_retries=5, initial_delay=3):
                 if attempt == max_retries - 1:
                     raise e
                 time.sleep(delay)
-                delay *= 2  # 실패할 경우 대기 시간을 3초 -> 6초 -> 12초로 배가시킴
+                delay *= 2
             else:
                 raise e
 
@@ -186,13 +203,14 @@ if check_password():
             if st.button("AI 분석 및 DB 저장"):
                 if uploaded_file:
                     total_count = 0
+                    duplicate_count = 0
                     
-                    # 1. PDF인 경우 2페이지씩 아주 잘게 쪼개서 순차 처리 (부하 최소화)
+                    # 1. PDF인 경우 2페이지씩 쪼개서 처리 + 중복 검사 자동 스킵
                     if uploaded_file.type == "application/pdf":
                         try:
                             pdf_reader = PdfReader(uploaded_file)
                             total_pages = len(pdf_reader.pages)
-                            chunk_size = 2  # 5장에서 2장 단위로 축소
+                            chunk_size = 2
                             
                             progress_bar = st.progress(0)
                             status_text = st.empty()
@@ -253,16 +271,20 @@ if check_password():
                                     full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
                                     a_text = str(q.get("answer", "")).strip()
                                     s_text = q.get("solution", "").strip()
+                                    
                                     if q_text:
-                                        save_question(round_name, full_content, a_text, s_text)
-                                        total_count += 1
+                                        # 중복 체크 후 저장
+                                        is_new = save_question_if_not_exists(round_name, full_content, a_text, s_text)
+                                        if is_new:
+                                            total_count += 1
+                                        else:
+                                            duplicate_count += 1
 
-                                # 각 2페이지 처리 직후 서버 안정화를 위해 2초 대기
-                                time.sleep(2.0)
+                                time.sleep(1.5)
 
                             progress_bar.empty()
                             status_text.empty()
-                            st.success(f"🎉 총 {total_count}개의 문제가 성공적으로 등록되었습니다!")
+                            st.success(f"🎉 신규 등록: {total_count개 / 중복으로 건너뜀: {duplicate_count}개}")
                             st.toast("문제 등록 완료!", icon="✅")
 
                         except Exception as e:
@@ -310,6 +332,7 @@ if check_password():
 
                                 questions_list = json.loads(raw_text)
                                 count = 0
+                                dup_count = 0
                                 for q in questions_list:
                                     q_text = q.get("question_text", "").strip()
                                     opts = q.get("options", [])
@@ -317,10 +340,11 @@ if check_password():
                                     a_text = str(q.get("answer", "")).strip()
                                     s_text = q.get("solution", "").strip()
                                     if q_text:
-                                        save_question(round_name, full_content, a_text, s_text)
-                                        count += 1
+                                        is_new = save_question_if_not_exists(round_name, full_content, a_text, s_text)
+                                        if is_new: count += 1
+                                        else: dup_count += 1
 
-                                st.success(f"🎉 총 {count}개의 문제가 성공적으로 등록되었습니다!")
+                                st.success(f"🎉 신규 등록: {count}개 / 중복 건너뜀: {dup_count}개")
                                 st.toast("문제 등록 완료!", icon="✅")
                             except Exception as e:
                                 st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
@@ -384,6 +408,7 @@ if check_password():
 
                             questions_list = json.loads(raw_text)
                             count = 0
+                            dup_count = 0
                             for q in questions_list:
                                 q_text = q.get("question_text", "").strip()
                                 opts = q.get("options", [])
@@ -391,10 +416,11 @@ if check_password():
                                 a_text = str(q.get("answer", "")).strip()
                                 s_text = q.get("solution", "").strip()
                                 if q_text:
-                                    save_question(round_name, full_content, a_text, s_text)
-                                    count += 1
+                                    is_new = save_question_if_not_exists(round_name, full_content, a_text, s_text)
+                                    if is_new: count += 1
+                                    else: dup_count += 1
 
-                            st.success(f"🎉 총 {count}개의 문제가 자동 매칭을 통해 등록되었습니다!")
+                            st.success(f"🎉 신규 등록: {count}개 / 중복 건너뜀: {dup_count}개")
                             st.toast("자동 매칭 완료!", icon="✨")
                         except Exception as e:
                             st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
