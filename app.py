@@ -152,8 +152,8 @@ if check_password():
         
         if st.button(f"⚠️ [{round_name}]에 등록된 모든 문제 데이터 초기화하기"):
             reset_round_questions(round_name)
-            st.success(f"[{round_name}]의 모든 문제가 초기화되었습니다!")
-            st.rerun()
+            st.success(f"[{round_name}]의 모든 문제와 학습 기록이 깨끗하게 초기화되었습니다!")
+            st.toast("초기화 완료!", icon="🗑️")
 
         st.markdown("---")
         upload_mode = st.radio("업로드 방식을 선택하세요:", ["기본 (문제+해설 일체형)", "고급 (문제지 + 해설지 분리 업로드)"], horizontal=True)
@@ -213,7 +213,8 @@ if check_password():
                                     save_question(round_name, full_content, a_text, s_text)
                                     count += 1
 
-                            st.success(f"총 {count}개의 문제가 성공적으로 등록되었습니다!")
+                            st.success(f"🎉 총 {count}개의 문제가 성공적으로 등록되었습니다!")
+                            st.toast("문제 등록 완료!", icon="✅")
                         except Exception as e:
                             st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
                 else:
@@ -287,7 +288,8 @@ if check_password():
                                     save_question(round_name, full_content, a_text, s_text)
                                     count += 1
 
-                            st.success(f"총 {count}개의 문제가 자동 매칭을 통해 등록되었습니다!")
+                            st.success(f"🎉 총 {count}개의 문제가 자동 매칭을 통해 등록되었습니다!")
+                            st.toast("자동 매칭 완료!", icon="✨")
                         except Exception as e:
                             st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
                 else:
@@ -301,12 +303,15 @@ if check_password():
         if os.path.exists(DB_FILE):
             with open(DB_FILE, "rb") as f:
                 db_bytes = f.read()
-            st.download_button(
+            
+            download_clicked = st.download_button(
                 label="📥 현재 문제 데이터 백업하기 (.db 다운로드)",
                 data=db_bytes,
                 file_name="question_bank.db",
                 mime="application/x-sqlite3"
             )
+            if download_clicked:
+                st.toast("백업 파일이 다운로드되었습니다!", icon="💾")
 
         # 2. 복구 업로더
         uploaded_db = st.file_uploader("📤 백업해둔 DB 파일 업로드하여 복구하기", type=["db"])
@@ -315,7 +320,8 @@ if check_password():
                 try:
                     with open(DB_FILE, "wb") as f:
                         f.write(uploaded_db.getbuffer())
-                    st.success("데이터가 성공적으로 복구되었습니다! 잠시 후 새로고침됩니다.")
+                    st.success("🎉 데이터가 성공적으로 복구되었습니다! 잠시 후 새로고침됩니다.")
+                    st.toast("복구 완료!", icon="🔄")
                     st.rerun()
                 except Exception as e:
                     st.error(f"복구 중 오류가 발생했습니다: {e}")
@@ -325,9 +331,13 @@ if check_password():
         st.header("🎯 회차별 시험 풀기")
         selected_round = st.selectbox("풀어볼 회차 선택", ROUND_OPTIONS)
         
+        # 선택한 회차에 등록된 문제 수 실시간 확인
         conn = sqlite3.connect(DB_FILE)
+        total_q_count = conn.execute("SELECT COUNT(*) FROM questions WHERE round = ?", (selected_round,)).fetchone()[0]
         has_history = conn.execute("SELECT COUNT(*) FROM user_progress WHERE round = ?", (selected_round,)).fetchone()[0] > 0
         conn.close()
+
+        st.info(f"📊 **[{selected_round}]** 현재 총 **{total_q_count}문제**가 등록되어 있습니다.")
 
         mode = "이어서 풀기"
         if has_history:
@@ -337,7 +347,8 @@ if check_password():
             if mode == "처음부터 새로 풀기":
                 if st.button("🔄 기존 기록 초기화하고 새로 시작하기"):
                     clear_progress(selected_round)
-                    st.success("기록이 초기화되었습니다!")
+                    st.success("기존 풀이 기록이 초기화되었습니다!")
+                    st.toast("기록 초기화 완료", icon="🔄")
                     st.rerun()
 
         if mode == "이어서 풀기" or not has_history:
@@ -349,7 +360,7 @@ if check_password():
             total_q = len(questions)
 
             if not questions:
-                st.info("해당 회차에 등록된 문제가 없습니다.")
+                st.warning("해당 회차에 등록된 문제가 없습니다. '문제 등록' 메뉴에서 먼저 문제를 추가해주세요.")
             else:
                 for idx, q in enumerate(questions):
                     q_id = q[0]
@@ -471,6 +482,7 @@ if check_password():
                         st.success(f"정답입니다! 🎉 완벽하게 이해하셨네요.")
                         mark_wrong(q_id, 0)
                         if st.button(f"🔄 오답노트에서 즉시 삭제하기 (ID: {q_id})", key=f"del_now_{q_id}"):
+                            st.toast("오답노트에서 삭제되었습니다.", icon="🗑️")
                             st.rerun()
                     else:
                         st.error(f"오답입니다! (선택한 답: {ans}) / 정답: {correct_ans}")
@@ -510,7 +522,8 @@ if check_password():
                     if st.button(f"문제 내용 및 해설 저장 (ID: {q_id})", key=f"save_content_{q_id}"):
                         updated_full_content = json.dumps({"question": new_content_text, "options": options}, ensure_ascii=False)
                         update_question_content_and_solution(q_id, updated_full_content, new_sol)
-                        st.success("문제 내용과 해설이 수정되었습니다!")
+                        st.success("🎉 문제 내용과 해설이 성공적으로 수정되었습니다!")
+                        st.toast("수정 완료!", icon="✏️")
                         st.rerun()
 
                     st.markdown("---")
@@ -532,11 +545,13 @@ if check_password():
                         
                         if st.button(f"선택한 보기로 정답 변경 (ID: {q_id})", key=f"save_ans_{q_id}"):
                             update_question_answer(q_id, selected_new_ans)
-                            st.success(f"정답이 '{selected_new_ans}'로 변경되었습니다!")
+                            st.success(f"🎉 정답이 '{selected_new_ans}'로 변경되었습니다!")
+                            st.toast("정답 변경 완료!", icon="✨")
                             st.rerun()
                     else:
                         new_ans_text = st.text_input("정답 직접 입력", value=current_ans, key=f"edit_ans_input_{q_id}")
                         if st.button(f"정답 변경 (ID: {q_id})", key=f"save_ans_txt_{q_id}"):
                             update_question_answer(q_id, new_ans_text)
-                            st.success("정답이 변경되었습니다!")
+                            st.success("🎉 정답이 성공적으로 변경되었습니다!")
+                            st.toast("정답 변경 완료!", icon="✨")
                             st.rerun()
