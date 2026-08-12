@@ -137,7 +137,7 @@ def call_gemini_with_retry(client, contents, max_retries=5, initial_delay=3):
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.6-flash",
                 contents=contents
             )
             return response
