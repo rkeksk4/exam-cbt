@@ -45,7 +45,6 @@ def init_db():
                   user_answer TEXT, 
                   is_graded INTEGER DEFAULT 0)''')
     
-    # PDF 처리 마지막 페이지 기억용 테이블
     c.execute('''CREATE TABLE IF NOT EXISTS pdf_progress 
                  (round TEXT PRIMARY KEY, 
                   last_page INTEGER)''')
@@ -193,14 +192,13 @@ if check_password():
         st.header("📌 신규 문제 등록")
         round_name = st.selectbox("회차 선택", ROUND_OPTIONS)
         
-        # 현재 기억된 이어하기 페이지 상태 표시
         last_saved_page = get_last_pdf_page(round_name)
         if last_saved_page > 0:
-            st.info(f"💡 **[{round_name}]**은(는) 이전에 **{last_saved_page}페이지까지** 분석이 완료되었습니다. 다시 실행하면 다음 페이지부터 이어서 진행됩니다.")
+            st.info(f"💡 **[{round_name}]**은(는) 이전에 AI 분석으로 **{last_saved_page}페이지까지** 처리되었습니다.")
 
         if st.button(f"⚠️ [{round_name}]에 등록된 모든 문제 및 이어하기 기록 초기화하기"):
             reset_round_questions(round_name)
-            st.success(f"[{round_name}]의 모든 데이터와 이어하기 기록이 초기화되었습니다!")
+            st.success(f"[{round_name}]의 모든 데이터가 초기화되었습니다!")
             st.toast("초기화 완료!", icon="🗑️")
             st.rerun()
 
@@ -209,20 +207,27 @@ if check_password():
 
         if upload_mode == "기본 (문제+해설 일체형)":
             uploaded_file = st.file_uploader("문제 사진 또는 PDF 업로드", type=["jpg", "jpeg", "png", "pdf"])
-            if st.button("AI 분석 및 DB 저장"):
+            
+            # 버튼 영역 분할 (AI 분석 버튼 vs AI 안 쓰고 넣기 버튼)
+            col_ai1, col_ai2 = st.columns(2)
+            
+            with col_ai1:
+                ai_btn = st.button("🤖 AI 분석 및 DB 저장")
+            with col_ai2:
+                no_ai_btn = st.button("📝 AI 안 쓰고 페이지별 텍스트로 넣기")
+
+            if ai_btn:
                 if uploaded_file:
                     total_count = 0
-                    
                     if uploaded_file.type == "application/pdf":
                         try:
                             pdf_reader = PdfReader(uploaded_file)
                             total_pages = len(pdf_reader.pages)
                             chunk_size = 2
-                            
-                            # 이전에 중단된 페이지부터 시작
                             start_from = get_last_pdf_page(round_name)
+                            
                             if start_from >= total_pages:
-                                st.warning("이미 이 PDF의 모든 페이지가 처리가 완료되었습니다! 처음부터 다시 하려면 위에서 '기록 초기화'를 눌러주세요.")
+                                st.warning("이미 이 PDF의 모든 페이지가 처리가 완료되었습니다!")
                             else:
                                 progress_bar = st.progress(start_from / total_pages)
                                 status_text = st.empty()
@@ -269,7 +274,6 @@ if check_password():
                                     ]
 
                                     response = call_gemini_with_retry(client, prompt_contents)
-                                    
                                     raw_text = response.text.strip()
                                     if raw_text.startswith("```json"): raw_text = raw_text[7:]
                                     if raw_text.startswith("```"): raw_text = raw_text[3:]
@@ -283,44 +287,29 @@ if check_password():
                                         full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
                                         a_text = str(q.get("answer", "")).strip()
                                         s_text = q.get("solution", "").strip()
-                                        
                                         if q_text:
                                             save_question_direct(round_name, full_content, a_text, s_text)
                                             total_count += 1
 
-                                    # 현재까지 안전하게 처리된 마지막 페이지 번호 저장
                                     save_last_pdf_page(round_name, end_p)
                                     time.sleep(1.5)
 
                                 progress_bar.empty()
                                 status_text.empty()
-                                st.success(f"🎉 이어서 처리 완료! 추가 등록된 문제: {total_count}개")
+                                st.success(f"🎉 AI 분석 완료! 추가 등록된 문제: {total_count}개")
                                 st.toast("문제 등록 완료!", icon="✅")
-
                         except Exception as e:
-                            st.error(f"AI 분석 중 오류가 발생했습니다: {e}. 다시 버튼을 누르면 이어서 진행됩니다.")
-
+                            st.error(f"AI 분석 중 오류가 발생했습니다: {e}. 다시 누르면 이어서 진행됩니다.")
                     else:
-                        with st.spinner("AI가 이미지를 분석하고 보기를 분리하는 중..."):
+                        with st.spinner("AI가 이미지를 분석하는 중..."):
                             try:
                                 file_bytes = uploaded_file.getvalue()
                                 mime_type = uploaded_file.type
-
                                 prompt_contents = [
-                                    {
-                                        "inline_data": {
-                                            "data": file_bytes,
-                                            "mime_type": mime_type
-                                        }
-                                    },
+                                    {"inline_data": {"data": file_bytes, "mime_type": mime_type}},
                                     """
                                     이 이미지에 포함된 모든 문제를 각각 독립적인 낱개 문제로 완벽하게 분리해서 추출해줘.
-                                    핵심 규칙: 
-                                    1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
-                                    2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
-                                    3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
-                                    4. "solution"에는 해설을 적어줘.
-                                    반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                    반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외.
                                     [
                                       {
                                         "question_text": "문제 본문 내용",
@@ -331,7 +320,6 @@ if check_password():
                                     ]
                                     """
                                 ]
-
                                 response = call_gemini_with_retry(client, prompt_contents)
                                 raw_text = response.text.strip()
                                 if raw_text.startswith("```json"): raw_text = raw_text[7:]
@@ -350,13 +338,29 @@ if check_password():
                                     if q_text:
                                         save_question_direct(round_name, full_content, a_text, s_text)
                                         count += 1
-
                                 st.success(f"🎉 신규 등록: {count}개")
-                                st.toast("문제 등록 완료!", icon="✅")
                             except Exception as e:
-                                st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
+                                st.error(f"오류 발생: {e}")
                 else:
                     st.warning("파일을 업로드해주세요.")
+
+            if no_ai_btn:
+                if uploaded_file and uploaded_file.type == "application/pdf":
+                    try:
+                        pdf_reader = PdfReader(uploaded_file)
+                        count = 0
+                        for idx, page in enumerate(pdf_reader.pages):
+                            page_text = page.extract_text()
+                            if page_text and page_text.strip():
+                                full_content = json.dumps({"question": f"[PDF {idx + 1}페이지 원문]\n\n" + page_text.strip(), "options": []}, ensure_ascii=False)
+                                save_question_direct(round_name, full_content, "미지정", "해설을 입력해주세요.")
+                                count += 1
+                        st.success(f"🎉 총 {count}개 페이지의 텍스트가 등록되었습니다! [문제 관리/수정] 메뉴에서 편집하세요.")
+                        st.toast("등록 완료!", icon="✅")
+                    except Exception as e:
+                        st.error(f"처리 중 오류가 발생했습니다: {e}")
+                else:
+                    st.warning("PDF 파일을 업로드해주세요.")
         
         else:
             st.info("💡 문제지와 해설지가 따로 있는 경우, AI가 두 파일을 대조해 자동 매칭합니다.")
@@ -366,7 +370,7 @@ if check_password():
             
             if st.button("문제+해설 동시 분석 및 자동 매칭"):
                 if q_file and s_file:
-                    with st.spinner("AI가 문제지와 해설지를 매칭하는 중... (대용량 파일일 경우 시간이 걸릴 수 있습니다)"):
+                    with st.spinner("AI가 문제지와 해설지를 매칭하는 중..."):
                         try:
                             q_bytes = q_file.getvalue()
                             q_mime = q_file.type
@@ -374,27 +378,12 @@ if check_password():
                             s_mime = s_file.type
 
                             prompt_contents = [
-                                {
-                                    "inline_data": {
-                                        "data": q_bytes,
-                                        "mime_type": q_mime
-                                    }
-                                },
-                                {
-                                    "inline_data": {
-                                        "data": s_bytes,
-                                        "mime_type": s_mime
-                                    }
-                                },
+                                {"inline_data": {"data": q_bytes, "mime_type": q_mime}},
+                                {"inline_data": {"data": s_bytes, "mime_type": s_mime}},
                                 """
                                 첫 번째로 제공된 자료는 '문제지'이고, 두 번째로 제공된 자료는 '해설지'야.
                                 이 두 자료를 상호 대조하여 각 문제 번호에 맞는 정답과 해설을 정확하게 찾아내어 완전한 세트로 구성해줘.
-                                핵심 규칙: 
-                                1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
-                                2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
-                                3. "answer"에는 해설지/정답지를 참고하여 정확한 정답 번호나 내용 (예: "①" 또는 "1")을 적어줘.
-                                4. "solution"에는 해당 문제의 해설 내용을 적어줘.
-                                반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외.
                                 [
                                   {
                                     "question_text": "문제 본문 내용",
@@ -657,31 +646,9 @@ if check_password():
                         st.rerun()
 
                     st.markdown("---")
-                    st.markdown(f"**현재 설정된 정답:** `{current_ans}`")
-
-                    if options:
-                        ans_default_idx = 0
-                        for i, opt in enumerate(options):
-                            if current_ans.strip() in opt or (opt.strip() and current_ans.strip()[:1] == opt.strip()[:1]):
-                                ans_default_idx = i
-                                break
-
-                        selected_new_ans = st.radio(
-                            "정답으로 지정할 보기 선택", 
-                            options, 
-                            index=ans_default_idx, 
-                            key=f"edit_ans_radio_{q_id}"
-                        )
-                        
-                        if st.button(f"선택한 보기로 정답 변경 (ID: {q_id})", key=f"save_ans_{q_id}"):
-                            update_question_answer(q_id, selected_new_ans)
-                            st.success(f"🎉 정답이 '{selected_new_ans}'로 변경되었습니다!")
-                            st.toast("정답 변경 완료!", icon="✨")
-                            st.rerun()
-                    else:
-                        new_ans_text = st.text_input("정답 직접 입력", value=current_ans, key=f"edit_ans_input_{q_id}")
-                        if st.button(f"정답 변경 (ID: {q_id})", key=f"save_ans_txt_{q_id}"):
-                            update_question_answer(q_id, new_ans_text)
-                            st.success("🎉 정답이 성공적으로 변경되었습니다!")
-                            st.toast("정답 변경 완료!", icon="✨")
-                            st.rerun()
+                    new_ans_text = st.text_input("정답 직접 입력", value=current_ans, key=f"edit_ans_input_{q_id}")
+                    if st.button(f"정답 변경 (ID: {q_id})", key=f"save_ans_txt_{q_id}"):
+                        update_question_answer(q_id, new_ans_text)
+                        st.success("🎉 정답이 성공적으로 변경되었습니다!")
+                        st.toast("정답 변경 완료!", icon="✨")
+                        st.rerun()
