@@ -32,6 +32,11 @@ def init_db():
                   user_answer TEXT, 
                   is_graded INTEGER DEFAULT 0,
                   PRIMARY KEY(round, question_id))''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS wrong_progress 
+                 (question_id INTEGER PRIMARY KEY, 
+                  user_answer TEXT, 
+                  is_graded INTEGER DEFAULT 0)''')
     conn.commit()
     conn.close()
 
@@ -57,6 +62,8 @@ def mark_wrong(q_id, status):
     conn = sqlite3.connect("question_bank.db")
     c = conn.cursor()
     c.execute("UPDATE questions SET is_wrong = ? WHERE id = ?", (status, q_id))
+    if status == 0:
+        c.execute("DELETE FROM wrong_progress WHERE question_id = ?", (q_id,))
     conn.commit()
     conn.close()
 
@@ -81,6 +88,27 @@ def save_progress(round_name, q_id, user_answer, is_graded):
     conn.commit()
     conn.close()
 
+def load_wrong_progress(q_id):
+    conn = sqlite3.connect("question_bank.db")
+    c = conn.cursor()
+    c.execute("SELECT user_answer, is_graded FROM wrong_progress WHERE question_id = ?", (q_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return row[0], bool(row[1])
+    return None, False
+
+def save_wrong_progress(q_id, user_answer, is_graded):
+    conn = sqlite3.connect("question_bank.db")
+    c = conn.cursor()
+    c.execute('''INSERT INTO wrong_progress (question_id, user_answer, is_graded) 
+                 VALUES (?, ?, ?) 
+                 ON CONFLICT(question_id) 
+                 DO UPDATE SET user_answer = ?, is_graded = ?''', 
+              (q_id, user_answer, int(is_graded), user_answer, int(is_graded)))
+    conn.commit()
+    conn.close()
+
 def clear_progress(round_name):
     conn = sqlite3.connect("question_bank.db")
     c = conn.cursor()
@@ -93,6 +121,7 @@ def reset_all_questions():
     c = conn.cursor()
     c.execute("DELETE FROM questions")
     c.execute("DELETE FROM user_progress")
+    c.execute("DELETE FROM wrong_progress")
     conn.commit()
     conn.close()
 
@@ -120,7 +149,7 @@ if check_password():
     # ================= 1. 문제 등록 =================
     if menu == "문제 등록":
         st.header("📌 신규 문제 등록 (사진/PDF)")
-        round_name = st.selectbox("회차 선택", ["1회차", "2회차", "3회차", "4회차", "5회차", "기타"])
+        round_name = st.selectbox("회차 선택", ["1회차", "2회차", "3회차", "4회차", "5회차", "6회차", "7회차", "8회차", "9회차", "10회차", "11회차", "12회차"])
         
         if st.button("⚠️ 기존 등록된 모든 문제 데이터 초기화하기"):
             reset_all_questions()
@@ -253,7 +282,6 @@ if check_password():
                     ans = saved_ans
 
                     if options:
-                        # 💡 저장된 답안이 있으면 해당 인덱스를 지정하고, 없으면 None으로 지정하여 초기에 아무것도 선택되지 않게 함
                         default_idx = None
                         if saved_ans in options:
                             default_idx = options.index(saved_ans)
@@ -265,7 +293,6 @@ if check_password():
                             key=f"radio_{q_id}"
                         )
                         
-                        # 사용자가 실제로 보기를 클릭했을 때만 채점 상태로 전환
                         if selected_option and selected_option != saved_ans:
                             ans = selected_option
                             saved_graded = True
@@ -276,7 +303,6 @@ if check_password():
                             saved_graded = True
                             save_progress(selected_round, q_id, ans, saved_graded)
 
-                    # 💡 채점이 완료된 경우에만 정답/해설 노출
                     if saved_graded and ans:
                         is_correct = (ans.strip() == correct_ans.strip()) or (ans.strip()[:1] == correct_ans.strip()[:1])
                         
@@ -304,23 +330,62 @@ if check_password():
         if not wrongs:
             st.success("현재 틀린 문제가 없습니다. 아주 잘하고 계십니다!")
         else:
-            st.info("틀린 문제들을 다시 풀고, 완벽히 이해했다면 오답 노트에서 제거할 수 있습니다.")
-            for q in wrongs:
+            st.info("틀린 문제들을 다시 풀고, 완벽히 맞히면 오답 노트에서 자동으로 해제됩니다.")
+            for idx, q in enumerate(wrongs):
+                q_id = q[0]
+                round_name = q[1]
+                raw_content = q[2]
+                correct_ans = q[3]
+                solution = q[4]
+
                 try:
-                    content_dict = json.loads(q[2])
-                    q_text = content_dict.get("question", q[2])
+                    content_dict = json.loads(raw_content)
+                    q_text = content_dict.get("question", raw_content)
+                    options = content_dict.get("options", [])
                 except:
-                    q_text = q[2]
+                    q_text = raw_content
+                    options = []
 
-                with st.expander(f"[{q[1]}] 오답 문제 (ID: {q[0]})"):
-                    st.markdown(f"**문제 내용:**\n{q_text}")
-                    st.markdown(f"**정답:** {q[3]}")
-                    st.info(f"**해설:** {q[4]}")
+                st.markdown(f"---")
+                st.markdown(f"**[{round_name}] 오답 문제 #{idx + 1} (ID: {q_id})**")
+                st.markdown(q_text)
 
-                    if st.button(f"🗑 오답 노트에서 이 문제 제거하기", key=f"del_{q[0]}"):
-                        mark_wrong(q[0], 0)
-                        st.success("오답 노트에서 제거되었습니다.")
-                        st.rerun()
+                saved_ans, saved_graded = load_wrong_progress(q_id)
+                ans = saved_ans
+
+                if options:
+                    default_idx = None
+                    if saved_ans in options:
+                        default_idx = options.index(saved_ans)
+
+                    selected_option = st.radio(
+                        f"오답 다시 풀기 (ID: {q_id})", 
+                        options, 
+                        index=default_idx, 
+                        key=f"wrong_radio_{q_id}"
+                    )
+                    
+                    if selected_option and selected_option != saved_ans:
+                        ans = selected_option
+                        saved_graded = True
+                        save_wrong_progress(q_id, ans, saved_graded)
+                else:
+                    ans = st.text_input(f"답안 입력 (ID: {q_id})", value=saved_ans if saved_ans else "", key=f"wrong_ans_{q_id}")
+                    if st.button(f"정답 확인 (ID: {q_id})", key=f"wrong_btn_{q_id}"):
+                        saved_graded = True
+                        save_wrong_progress(q_id, ans, saved_graded)
+
+                if saved_graded and ans:
+                    is_correct = (ans.strip() == correct_ans.strip()) or (ans.strip()[:1] == correct_ans.strip()[:1])
+                    
+                    if is_correct:
+                        st.success(f"정답입니다! 🎉 완벽하게 이해하셨네요.")
+                        mark_wrong(q_id, 0)
+                        if st.button(f"🔄 오답노트에서 즉시 삭제하기 (ID: {q_id})", key=f"del_now_{q_id}"):
+                            st.rerun()
+                    else:
+                        st.error(f"오답입니다! (선택한 답: {ans}) / 정답: {correct_ans}")
+                        st.info(f"해설: {solution}")
 
     # ================= 4. 문제 관리/수정 =================
     elif menu == "문제 관리/수정":
