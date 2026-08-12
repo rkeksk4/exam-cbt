@@ -3,6 +3,8 @@ from google import genai
 import sqlite3
 import json
 import os
+import io
+from pypdf import PdfReader, PdfWriter
 
 # --- 페이지 설정 ---
 st.set_page_config(page_title="나만의 영구 문제은행", layout="centered")
@@ -162,65 +164,149 @@ if check_password():
             uploaded_file = st.file_uploader("문제 사진 또는 PDF 업로드", type=["jpg", "jpeg", "png", "pdf"])
             if st.button("AI 분석 및 DB 저장"):
                 if uploaded_file:
-                    with st.spinner("AI가 문제를 분석하고 보기를 분리하는 중..."):
+                    total_count = 0
+                    
+                    # 1. 파일이 PDF인 경우 5페이지씩 쪼개서 순차 처리
+                    if uploaded_file.type == "application/pdf":
                         try:
-                            file_bytes = uploaded_file.getvalue()
-                            mime_type = uploaded_file.type
+                            pdf_reader = PdfReader(uploaded_file)
+                            total_pages = len(pdf_reader.pages)
+                            chunk_size = 5
+                            
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
 
-                            response = client.models.generate_content(
-                                model="gemini-3.6-flash",
-                                contents=[
-                                    {
-                                        "inline_data": {
-                                            "data": file_bytes,
-                                            "mime_type": mime_type
-                                        }
-                                    },
-                                    """
-                                    이 자료(이미지/PDF)에 포함된 모든 문제를 각각 독립적인 낱개 문제로 완벽하게 분리해서 추출해줘.
-                                    핵심 규칙: 
-                                    1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
-                                    2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
-                                    3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
-                                    4. "solution"에는 해설을 적어줘.
-                                    반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
-                                    [
-                                      {
-                                        "question_text": "문제 본문 내용",
-                                        "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
-                                        "answer": "①",
-                                        "solution": "해설 내용"
-                                      }
+                            for i in range(0, total_pages, chunk_size):
+                                start_p = i
+                                end_p = min(i + chunk_size, total_pages)
+                                
+                                status_text.text(f"PDF 처리 중... ({start_p + 1} ~ {end_p}페이지 / 총 {total_pages}페이지)")
+                                progress_bar.progress((i + 1) / total_pages)
+
+                                # 5페이지씩 잘라서 새로운 PDF 바이트 생성
+                                pdf_writer = PdfWriter()
+                                for p_idx in range(start_p, end_p):
+                                    pdf_writer.add_page(pdf_reader.pages[p_idx])
+                                
+                                chunk_io = io.BytesIO()
+                                pdf_writer.write(chunk_io)
+                                chunk_bytes = chunk_io.getvalue()
+
+                                # AI 요청
+                                response = client.models.generate_content(
+                                    model="gemini-3.6-flash",
+                                    contents=[
+                                        {
+                                            "inline_data": {
+                                                "data": chunk_bytes,
+                                                "mime_type": "application/pdf"
+                                            }
+                                        },
+                                        """
+                                        이 PDF 구간(일부 페이지)에 포함된 모든 문제를 각각 독립적인 낱개 문제로 분리해서 추출해줘.
+                                        핵심 규칙: 
+                                        1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
+                                        2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
+                                        3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
+                                        4. "solution"에는 해설을 적어줘.
+                                        반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                        [
+                                          {
+                                            "question_text": "문제 본문 내용",
+                                            "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
+                                            "answer": "①",
+                                            "solution": "해설 내용"
+                                          }
+                                        ]
+                                        """
                                     ]
-                                    """
-                                ]
-                            )
-                            raw_text = response.text.strip()
-                            if raw_text.startswith("```json"): raw_text = raw_text[7:]
-                            if raw_text.startswith("```"): raw_text = raw_text[3:]
-                            if raw_text.endswith("```"): raw_text = raw_text[:-3]
-                            raw_text = raw_text.strip()
+                                )
+                                raw_text = response.text.strip()
+                                if raw_text.startswith("```json"): raw_text = raw_text[7:]
+                                if raw_text.startswith("```"): raw_text = raw_text[3:]
+                                if raw_text.endswith("```"): raw_text = raw_text[:-3]
+                                raw_text = raw_text.strip()
 
-                            questions_list = json.loads(raw_text)
-                            count = 0
-                            for q in questions_list:
-                                q_text = q.get("question_text", "").strip()
-                                opts = q.get("options", [])
-                                full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
-                                a_text = str(q.get("answer", "")).strip()
-                                s_text = q.get("solution", "").strip()
-                                if q_text:
-                                    save_question(round_name, full_content, a_text, s_text)
-                                    count += 1
+                                questions_list = json.loads(raw_text)
+                                for q in questions_list:
+                                    q_text = q.get("question_text", "").strip()
+                                    opts = q.get("options", [])
+                                    full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
+                                    a_text = str(q.get("answer", "")).strip()
+                                    s_text = q.get("solution", "").strip()
+                                    if q_text:
+                                        save_question(round_name, full_content, a_text, s_text)
+                                        total_count += 1
 
-                            st.success(f"🎉 총 {count}개의 문제가 성공적으로 등록되었습니다!")
+                            progress_bar.empty()
+                            status_text.empty()
+                            st.success(f"🎉 총 {total_count}개의 문제가 성공적으로 등록되었습니다!")
                             st.toast("문제 등록 완료!", icon="✅")
+
                         except Exception as e:
                             st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
+
+                    # 2. 이미지고 파일인 경우 (기존 방식 단건 처리)
+                    else:
+                        with st.spinner("AI가 이미지를 분석하고 보기를 분리하는 중..."):
+                            try:
+                                file_bytes = uploaded_file.getvalue()
+                                mime_type = uploaded_file.type
+
+                                response = client.models.generate_content(
+                                    model="gemini-3.6-flash",
+                                    contents=[
+                                        {
+                                            "inline_data": {
+                                                "data": file_bytes,
+                                                "mime_type": mime_type
+                                            }
+                                        },
+                                        """
+                                        이 이미지에 포함된 모든 문제를 각각 독립적인 낱개 문제로 완벽하게 분리해서 추출해줘.
+                                        핵심 규칙: 
+                                        1. "question_text"에는 보기(①, ② 등)를 제외한 순수 문제 본문만 담아줘.
+                                        2. "options"에는 보기들을 리스트 형태로 각각 담아줘 (예: ["① 보기내용1", "② 보기내용2", "③ 보기내용3", "④ 보기내용4"]).
+                                        3. "answer"에는 정답 번호나 내용 (예: "①" 또는 "1" 등 정확한 정답)을 적어줘.
+                                        4. "solution"에는 해설을 적어줘.
+                                        반드시 아래 JSON 형식의 배열(Array) 형태로만 정확하게 답변해줘. 마크다운 기호(```json 등)는 제외하거나 표준 JSON으로 줘.
+                                        [
+                                          {
+                                            "question_text": "문제 본문 내용",
+                                            "options": ["① 보기1", "② 보기2", "③ 보기3", "④ 보기4"],
+                                            "answer": "①",
+                                            "solution": "해설 내용"
+                                          }
+                                        ]
+                                        """
+                                    ]
+                                )
+                                raw_text = response.text.strip()
+                                if raw_text.startswith("```json"): raw_text = raw_text[7:]
+                                if raw_text.startswith("```"): raw_text = raw_text[3:]
+                                if raw_text.endswith("```"): raw_text = raw_text[:-3]
+                                raw_text = raw_text.strip()
+
+                                questions_list = json.loads(raw_text)
+                                count = 0
+                                for q in questions_list:
+                                    q_text = q.get("question_text", "").strip()
+                                    opts = q.get("options", [])
+                                    full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
+                                    a_text = str(q.get("answer", "")).strip()
+                                    s_text = q.get("solution", "").strip()
+                                    if q_text:
+                                        save_question(round_name, full_content, a_text, s_text)
+                                        count += 1
+
+                                st.success(f"🎉 총 {count}개의 문제가 성공적으로 등록되었습니다!")
+                                st.toast("문제 등록 완료!", icon="✅")
+                            except Exception as e:
+                                st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
                 else:
                     st.warning("파일을 업로드해주세요.")
         
-        else: # 고급 분리 업로드
+        else: # 고급 분리 업로드 (문제지+해설지)
             st.info("💡 문제지와 해설지가 따로 있는 경우, AI가 두 파일을 대조해 자동 매칭합니다.")
             col1, col2 = st.columns(2)
             with col1: q_file = st.file_uploader("1. 문제지 파일", type=["jpg", "jpeg", "png", "pdf"])
@@ -228,8 +314,9 @@ if check_password():
             
             if st.button("문제+해설 동시 분석 및 자동 매칭"):
                 if q_file and s_file:
-                    with st.spinner("AI가 문제지와 해설지를 매칭하는 중..."):
+                    with st.spinner("AI가 문제지와 해설지를 매칭하는 중... (대용량 파일일 경우 시간이 걸릴 수 있습니다)"):
                         try:
+                            # 고급 모드는 단건으로 처리하되, 503 방지를 위해 이미지 위주 처리 권장 (PDF는 기본 일체형 권장)
                             q_bytes = q_file.getvalue()
                             q_mime = q_file.type
                             s_bytes = s_file.getvalue()
@@ -295,11 +382,10 @@ if check_password():
                 else:
                     st.warning("두 파일을 모두 업로드해주세요.")
 
-        # --- 데이터 백업 및 복구 구역 추가 ---
+        # --- 데이터 백업 및 복구 구역 ---
         st.markdown("---")
         st.subheader("💾 데이터 백업 및 복구 (서버 초기화 대비)")
         
-        # 1. 백업 버튼
         if os.path.exists(DB_FILE):
             with open(DB_FILE, "rb") as f:
                 db_bytes = f.read()
@@ -313,7 +399,6 @@ if check_password():
             if download_clicked:
                 st.toast("백업 파일이 다운로드되었습니다!", icon="💾")
 
-        # 2. 복구 업로더
         uploaded_db = st.file_uploader("📤 백업해둔 DB 파일 업로드하여 복구하기", type=["db"])
         if uploaded_db is not None:
             if st.button("🔄 데이터 복구 적용하기"):
@@ -331,7 +416,6 @@ if check_password():
         st.header("🎯 회차별 시험 풀기")
         selected_round = st.selectbox("풀어볼 회차 선택", ROUND_OPTIONS)
         
-        # 선택한 회차에 등록된 문제 수 실시간 확인
         conn = sqlite3.connect(DB_FILE)
         total_q_count = conn.execute("SELECT COUNT(*) FROM questions WHERE round = ?", (selected_round,)).fetchone()[0]
         has_history = conn.execute("SELECT COUNT(*) FROM user_progress WHERE round = ?", (selected_round,)).fetchone()[0] > 0
