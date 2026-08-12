@@ -116,12 +116,17 @@ def clear_progress(round_name):
     conn.commit()
     conn.close()
 
-def reset_all_questions():
+def reset_round_questions(round_name):
     conn = sqlite3.connect("question_bank.db")
     c = conn.cursor()
-    c.execute("DELETE FROM questions")
-    c.execute("DELETE FROM user_progress")
-    c.execute("DELETE FROM wrong_progress")
+    # 해당 회차에 속한 문제들의 ID 조회
+    q_ids = [row[0] for row in c.execute("SELECT id FROM questions WHERE round = ?", (round_name,)).fetchall()]
+    if q_ids:
+        # 오답 노트 및 오답 진행 상황에서 해당 문제들 제거
+        c.execute(f"DELETE FROM wrong_progress WHERE question_id IN ({','.join(['?']*len(q_ids))})", q_ids)
+    # 해당 회차 문제 및 진행 기록 삭제
+    c.execute("DELETE FROM questions WHERE round = ?", (round_name,))
+    c.execute("DELETE FROM user_progress WHERE round = ?", (round_name,))
     conn.commit()
     conn.close()
 
@@ -149,11 +154,11 @@ if check_password():
     # ================= 1. 문제 등록 =================
     if menu == "문제 등록":
         st.header("📌 신규 문제 등록 (사진/PDF)")
-        round_name = st.selectbox("회차 선택", ["1회차", "2회차", "3회차", "4회차", "5회차", "6회차", "7회차", "8회차", "9회차", "10회차", "11회차", "12회차"])
+        round_name = st.selectbox("회차 선택", ["1회차", "2회차", "3회차", "4회차", "5회차", "기타"])
         
-        if st.button("⚠️ 기존 등록된 모든 문제 데이터 초기화하기"):
-            reset_all_questions()
-            st.success("모든 문제가 초기화되었습니다!")
+        if st.button(f"⚠️ [{round_name}]에 등록된 모든 문제 데이터 초기화하기"):
+            reset_round_questions(round_name)
+            st.success(f"[{round_name}]의 모든 문제가 초기화되었습니다!")
             st.rerun()
 
         uploaded_file = st.file_uploader("문제 사진 또는 PDF 업로드", type=["jpg", "jpeg", "png", "pdf"])
