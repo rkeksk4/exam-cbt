@@ -143,6 +143,19 @@ def reset_round_questions(round_name):
     conn.commit()
     conn.close()
 
+def parse_question_content(raw_content):
+    """DB에 저장된 content를 안전하게 파싱하여 본문과 보기를 분리합니다."""
+    try:
+        if raw_content.startswith("{") or raw_content.startswith("["):
+            content_dict = json.loads(raw_content)
+            if isinstance(content_dict, dict):
+                q_text = content_dict.get("question", raw_content)
+                options = content_dict.get("options", [])
+                return q_text, options
+    except:
+        pass
+    return raw_content, []
+
 def check_password():
     if "password_correct" not in st.session_state: st.session_state["password_correct"] = False
     if not st.session_state["password_correct"]:
@@ -170,7 +183,6 @@ if check_password():
 
         st.markdown("---")
         
-        # 세션 상태 기본값 설정
         if "json_input_text" not in st.session_state:
             st.session_state["json_input_text"] = json.dumps([
                {
@@ -205,7 +217,6 @@ if check_password():
             st.session_state["json_input_text"] = ""
             st.rerun()
 
-        # text_area에 key를 부여하고 value 인자를 제거하여 상태 충돌 방지
         st.text_area(
             "JSON 데이터 입력", 
             height=300, 
@@ -261,7 +272,6 @@ if check_password():
 
         uploaded_db = st.file_uploader("📤 백업해둔 DB 파일 업로드하여 복구하기", type=["db"], key="db_uploader")
         
-        # DB 복구 버튼 클릭 시 즉시 반영되도록 수정
         if uploaded_db is not None:
             if st.button("🔄 데이터 복구 적용하기"):
                 try:
@@ -320,13 +330,7 @@ if check_password():
                     correct_ans = q[4]
                     solution = q[5]
 
-                    try:
-                        content_dict = json.loads(raw_content)
-                        q_text = content_dict.get("question", raw_content)
-                        options = content_dict.get("options", [])
-                    except:
-                        q_text = raw_content
-                        options = []
+                    q_text, options = parse_question_content(raw_content)
 
                     st.markdown(f"---")
                     st.markdown(f"**[문제 {q_num}번] (ID: {q_id})**")
@@ -390,13 +394,7 @@ if check_password():
                 correct_ans = q[4]
                 solution = q[5]
 
-                try:
-                    content_dict = json.loads(raw_content)
-                    q_text = content_dict.get("question", raw_content)
-                    options = content_dict.get("options", [])
-                except:
-                    q_text = raw_content
-                    options = []
+                q_text, options = parse_question_content(raw_content)
 
                 st.markdown(f"---")
                 st.markdown(f"**[{round_name}] 문제 {q_num}번 (ID: {q_id})**")
@@ -472,13 +470,7 @@ if check_password():
                 current_ans = q[4]
                 current_sol = q[5]
 
-                try:
-                    cd = json.loads(raw_content)
-                    q_text = cd.get("question", raw_content)
-                    options = cd.get("options", [])
-                except:
-                    q_text = raw_content
-                    options = []
+                q_text, options = parse_question_content(raw_content)
 
                 with st.expander(f"[{round_name}] 문제 {q_num}번 (ID: {q_id}) 수정하기"):
                     new_content_text = st.text_area("문제 내용", value=q_text, key=f"c_text_{q_id}")
