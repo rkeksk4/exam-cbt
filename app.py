@@ -17,7 +17,7 @@ st.markdown("""
 ROUND_OPTIONS = [f"{i}회차" for i in range(1, 13)]
 DB_FILE = "question_bank.db"
 
-# --- 데이터베이스(DB) 초기화 및 마이그레이션 ---
+# --- 데이터베이스(DB) 초기화 및 마이그레이션 (보기 개별 컬럼화) ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -26,14 +26,26 @@ def init_db():
                   round TEXT, 
                   question_number INTEGER,
                   content TEXT, 
+                  option_1 TEXT,
+                  option_2 TEXT,
+                  option_3 TEXT,
+                  option_4 TEXT,
+                  option_5 TEXT,
                   correct_answer TEXT, 
                   solution TEXT, 
                   is_wrong INTEGER DEFAULT 0)''')
     
-    try:
-        c.execute("SELECT question_number FROM questions LIMIT 1")
-    except sqlite3.OperationalError:
-        c.execute("ALTER TABLE questions ADD COLUMN question_number INTEGER")
+    # 기존 테이블에 개별 보기 컬럼이 없을 경우를 대비한 안전 마이그레이션
+    columns_to_add = [
+        ("option_1", "TEXT"), ("option_2", "TEXT"), 
+        ("option_3", "TEXT"), ("option_4", "TEXT"), 
+        ("option_5", "TEXT"), ("question_number", "INTEGER")
+    ]
+    for col_name, col_type in columns_to_add:
+        try:
+            c.execute(f"SELECT {col_name} FROM questions LIMIT 1")
+        except sqlite3.OperationalError:
+            c.execute(f"ALTER TABLE questions ADD COLUMN {col_name} {col_type}")
 
     c.execute('''CREATE TABLE IF NOT EXISTS user_progress 
                  (round TEXT, 
@@ -62,18 +74,35 @@ def get_existing_question_numbers(round_name):
         init_db()
         return []
 
-def save_question_direct(round_name, q_num, q_text, answer, solution):
+def save_question_split(round_name, q_num, q_text, opts, answer, solution):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("INSERT INTO questions (round, question_number, content, correct_answer, solution, is_wrong) VALUES (?, ?, ?, ?, ?, 0)", 
-              (round_name, q_num, q_text, answer, solution))
+    
+    # 보기 리스트에서 안전하게 최대 5개 추출
+    opt_1 = opts[0] if len(opts) > 0 else None
+    opt_2 = opts[1] if len(opts) > 1 else None
+    opt_3 = opts[2] if len(opts) > 2 else None
+    opt_4 = opts[3] if len(opts) > 3 else None
+    opt_5 = opts[4] if len(opts) > 4 else None
+
+    c.execute('''INSERT INTO questions 
+                 (round, question_number, content, option_1, option_2, option_3, option_4, option_5, correct_answer, solution, is_wrong) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)''', 
+              (round_name, q_num, q_text, opt_1, opt_2, opt_3, opt_4, opt_5, answer, solution))
     conn.commit()
     conn.close()
 
-def update_question_content_and_solution(q_id, content, solution):
+def update_question_full(q_id, content, opts, solution):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("UPDATE questions SET content=?, solution=? WHERE id=?", (content, solution, q_id))
+    opt_1 = opts[0] if len(opts) > 0 else None
+    opt_2 = opts[1] if len(opts) > 1 else None
+    opt_3 = opts[2] if len(opts) > 2 else None
+    opt_4 = opts[3] if len(opts) > 3 else None
+    opt_5 = opts[4] if len(opts) > 4 else None
+
+    c.execute('''UPDATE questions SET content=?, option_1=?, option_2=?, option_3=?, option_4=?, option_5=?, solution=? WHERE id=?''', 
+              (content, opt_1, opt_2, opt_3, opt_4, opt_5, solution, q_id))
     conn.commit()
     conn.close()
 
@@ -143,34 +172,10 @@ def reset_round_questions(round_name):
     conn.commit()
     conn.close()
 
-def parse_question_content(raw_content):
-    """DB에 저장된 content를 안전하게 파싱하여 본문과 보기를 분리합니다."""
-    if not raw_content:
-        return "", []
-    
-    current_data = raw_content
-    for _ in range(3):
-        if isinstance(current_data, str):
-            stripped = current_data.strip()
-            if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
-                try:
-                    current_data = json.loads(stripped)
-                    continue
-                except:
-                    break
-        break
-
-    if isinstance(current_data, dict):
-        q_text = current_data.get("question", current_data.get("question_text", ""))
-        options = current_data.get("options", [])
-        return str(q_text), list(options)
-    elif isinstance(current_data, list) and len(current_data) > 0:
-        if isinstance(current_data[0], dict):
-            q_text = current_data[0].get("question", current_data[0].get("question_text", ""))
-            options = current_data[0].get("options", [])
-            return str(q_text), list(options)
-
-    return str(raw_content), []
+def get_options_list(row_opt1, row_opt2, row_opt3, row_opt4, row_opt5):
+    """DB에 저장된 개별 보기 컬럼들을 리스트로 묶어줍니다."""
+    opts = [row_opt1, row_opt2, row_opt3, row_opt4, row_opt5]
+    return [o for o in opts if o is not None and str(o).strip() != ""]
 
 def check_password():
     if "password_correct" not in st.session_state: st.session_state["password_correct"] = False
@@ -257,16 +262,13 @@ if check_password():
                     count = 0
                     for q in parsed_data:
                         q_num = q.get("question_number")
-                        # 텍스트와 보기를 각각 명확하게 추출하여 저장
-                        q_text = q.get("question_text", q.get("question", "")).strip()
+                        q_text = str(q.get("question_text", q.get("question", ""))).strip()
                         opts = q.get("options", [])
-                        
-                        full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
                         a_text = str(q.get("answer", "")).strip()
-                        s_text = q.get("solution", "").strip()
+                        s_text = str(q.get("solution", "")).strip()
                         
                         if q_text and q_num is not None:
-                            save_question_direct(round_name, q_num, full_content, a_text, s_text)
+                            save_question_split(round_name, q_num, q_text, opts, a_text, s_text)
                             count += 1
 
                     st.success(f"🎉 성공적으로 {count}개의 문제가 [{round_name}]에 등록되었습니다!")
@@ -332,7 +334,7 @@ if check_password():
 
         if mode == "이어서 풀기" or not has_history:
             conn = sqlite3.connect(DB_FILE)
-            questions = conn.execute("SELECT * FROM questions WHERE round = ? ORDER BY question_number ASC", (selected_round,)).fetchall()
+            questions = conn.execute("SELECT id, round, question_number, content, option_1, option_2, option_3, option_4, option_5, correct_answer, solution FROM questions WHERE round = ? ORDER BY question_number ASC", (selected_round,)).fetchall()
             conn.close()
 
             score = 0
@@ -344,11 +346,10 @@ if check_password():
                 for q in questions:
                     q_id = q[0]
                     q_num = q[2]
-                    raw_content = q[3]
-                    correct_ans = q[4]
-                    solution = q[5]
-
-                    q_text, options = parse_question_content(raw_content)
+                    q_text = q[3]
+                    options = get_options_list(q[4], q[5], q[6], q[7], q[8])
+                    correct_ans = q[9]
+                    solution = q[10]
 
                     st.markdown(f"---")
                     st.markdown(f"**[문제 {q_num}번] (ID: {q_id})**")
@@ -394,7 +395,7 @@ if check_password():
         st.header("📝 오답 노트")
         try:
             conn = sqlite3.connect(DB_FILE)
-            wrongs = conn.execute("SELECT * FROM questions WHERE is_wrong = 1 ORDER BY round, question_number ASC").fetchall()
+            wrongs = conn.execute("SELECT id, round, question_number, content, option_1, option_2, option_3, option_4, option_5, correct_answer, solution FROM questions WHERE is_wrong = 1 ORDER BY round, question_number ASC").fetchall()
             conn.close()
         except sqlite3.OperationalError:
             init_db()
@@ -408,11 +409,10 @@ if check_password():
                 q_id = q[0]
                 round_name = q[1]
                 q_num = q[2]
-                raw_content = q[3]
-                correct_ans = q[4]
-                solution = q[5]
-
-                q_text, options = parse_question_content(raw_content)
+                q_text = q[3]
+                options = get_options_list(q[4], q[5], q[6], q[7], q[8])
+                correct_ans = q[9]
+                solution = q[10]
 
                 st.markdown(f"---")
                 st.markdown(f"**[{round_name}] 문제 {q_num}번 (ID: {q_id})**")
@@ -471,7 +471,7 @@ if check_password():
 
         try:
             conn = sqlite3.connect(DB_FILE)
-            questions = conn.execute("SELECT * FROM questions ORDER BY round, question_number ASC").fetchall()
+            questions = conn.execute("SELECT id, round, question_number, content, option_1, option_2, option_3, option_4, option_5, correct_answer, solution FROM questions ORDER BY round, question_number ASC").fetchall()
             conn.close()
         except sqlite3.OperationalError:
             init_db()
@@ -484,19 +484,17 @@ if check_password():
                 q_id = q[0]
                 round_name = q[1]
                 q_num = q[2]
-                raw_content = q[3]
-                current_ans = q[4]
-                current_sol = q[5]
-
-                q_text, options = parse_question_content(raw_content)
+                q_text = q[3]
+                options = get_options_list(q[4], q[5], q[6], q[7], q[8])
+                current_ans = q[9]
+                current_sol = q[10]
 
                 with st.expander(f"[{round_name}] 문제 {q_num}번 (ID: {q_id}) 수정하기"):
                     new_content_text = st.text_area("문제 내용", value=q_text, key=f"c_text_{q_id}")
                     new_sol = st.text_area("해설 수정", value=current_sol, key=f"s_{q_id}")
                     
                     if st.button(f"문제 내용 및 해설 저장 ({round_name} {q_num}번)", key=f"save_content_{q_id}"):
-                        updated_full_content = json.dumps({"question": new_content_text, "options": options}, ensure_ascii=False)
-                        update_question_content_and_solution(q_id, updated_full_content, new_sol)
+                        update_question_full(q_id, new_content_text, options, new_sol)
                         st.success("🎉 문제 내용과 해설이 성공적으로 수정되었습니다!")
                         st.toast("수정 완료!", icon="✏️")
                         st.rerun()
