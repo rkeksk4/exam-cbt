@@ -164,29 +164,81 @@ if check_password():
             st.info(f"💡 현재 **[{round_name}]**에 등록된 문제 번호: `{sorted(existing_nums)}`")
 
         st.markdown("---")
-        st.markdown("아래 입력창에 `question_number`가 포함된 JSON 포맷을 입력하고 등록 버튼을 누르세요.")
         
-        default_json_example = json.dumps([
-           {
-              "question_number": 1,
-              "question_text": "예시 문제 본문 내용",
-              "options": [
-                 "① 보기 1",
-                 "② 보기 2",
-                 "③ 보기 3",
-                 "④ 보기 4",
-                 "⑤ 보기 5"
-              ],
-              "answer": "①",
-              "solution": "해설 내용"
-           }
-        ], ensure_ascii=False, indent=4)
+        # 1-1. JSON 파일 업로드 방식 추가
+        st.subheader("📁 JSON 파일 업로드로 등록")
+        uploaded_json_file = st.file_uploader("문제가 담긴 JSON 파일을 업로드하세요", type=["json"])
+        if uploaded_json_file is not None:
+            if st.button("업로드한 JSON 파일로 문제 등록하기"):
+                try:
+                    file_content = uploaded_json_file.getvalue().decode("utf-8")
+                    parsed_data = json.loads(file_content)
+                    if not isinstance(parsed_data, list):
+                        parsed_data = [parsed_data]
+                    
+                    current_existing = set(get_existing_question_numbers(round_name))
+                    input_nums = [q.get("question_number") for q in parsed_data if "question_number" in q]
 
-        json_input_text = st.text_area("JSON 데이터 입력", value=default_json_example, height=300)
+                    duplicates = [num for num in input_nums if num in current_existing]
+                    if len(input_nums) != len(set(input_nums)):
+                        st.error("❌ 업로드된 JSON 파일 내부에 중복된 문제 번호가 존재합니다.")
+                    elif duplicates:
+                        st.error(f"❌ 이미 [{round_name}]에 존재하는 문제 번호(`{duplicates}`)가 포함되어 있어 등록이 취소되었습니다.")
+                    else:
+                        count = 0
+                        for q in parsed_data:
+                            q_num = q.get("question_number")
+                            q_text = q.get("question_text", "").strip()
+                            opts = q.get("options", [])
+                            full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
+                            a_text = str(q.get("answer", "")).strip()
+                            s_text = q.get("solution", "").strip()
+                            
+                            if q_text and q_num is not None:
+                                save_question_direct(round_name, q_num, full_content, a_text, s_text)
+                                count += 1
+
+                        st.success(f"🎉 성공적으로 {count}개의 문제가 [{round_name}]에 등록되었습니다!")
+                        st.toast("파일 문제 등록 완료!", icon="✅")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"파일 처리 중 오류가 발생했습니다: {e}")
+
+        st.markdown("---")
+        st.subheader("✍️ JSON 텍스트 직접 입력 및 등록")
+        
+        # 세션 상태를 이용한 JSON 입력 텍스트 초기화 관리
+        if "json_input_text" not in st.session_state:
+            st.session_state["json_input_text"] = json.dumps([
+               {
+                  "question_number": 1,
+                  "question_text": "예시 문제 본문 내용",
+                  "options": [
+                     "① 보기 1",
+                     "② 보기 2",
+                     "③ 보기 3",
+                     "④ 보기 4",
+                     "⑤ 보기 5"
+                  ],
+                  "answer": "①",
+                  "solution": "해설 내용"
+               }
+            ], ensure_ascii=False, indent=4)
+
+        # 텍스트 초기화 버튼
+        if st.button("🗑️ 입력창 비우기 (초기화)"):
+            st.session_state["json_input_text"] = ""
+            st.rerun()
+
+        json_input_text = st.text_area("JSON 데이터 입력", value=st.session_state["json_input_text"], height=300, key="json_textarea_widget")
+        
+        # 텍스트 영역 값이 바뀔 때 세션 동기화
+        if json_input_text != st.session_state["json_input_text"]:
+            st.session_state["json_input_text"] = json_input_text
 
         if st.button("JSON 데이터 DB에 등록하기"):
             try:
-                parsed_data = json.loads(json_input_text)
+                parsed_data = json.loads(st.session_state["json_input_text"])
                 if not isinstance(parsed_data, list):
                     parsed_data = [parsed_data]
                 
@@ -426,7 +478,7 @@ if check_password():
         st.header("🛠 문제 내용 및 정답/해설 수정")
         st.info("문제를 개별적으로 관리하고, 보기를 선택해 정답을 간편하게 수정할 수 있습니다.")
         
-        # --- 회차별 데이터 초기화 구역 (안전 장치 추가) ---
+        # --- 회차별 데이터 초기화 구역 (안전 장치 포함) ---
         with st.expander("⚠️ 위험 구역: 회차별 데이터 초기화"):
             reset_round_target = st.selectbox("초기화할 회차 선택", ROUND_OPTIONS, key="reset_target_round")
             confirm_checkbox = st.checkbox(f"[{reset_round_target}]의 모든 문제와 풀이 기록을 영구적으로 삭제하는 것에 동의합니다.")
