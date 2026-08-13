@@ -17,7 +17,7 @@ st.markdown("""
 ROUND_OPTIONS = [f"{i}회차" for i in range(1, 13)]
 DB_FILE = "question_bank.db"
 
-# --- 데이터베이스(DB) 초기화 및 마이그레이션 (보기 개별 컬럼화) ---
+# --- 데이터베이스(DB) 초기화 및 마이그레이션 ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -35,7 +35,6 @@ def init_db():
                   solution TEXT, 
                   is_wrong INTEGER DEFAULT 0)''')
     
-    # 기존 테이블에 개별 보기 컬럼이 없을 경우를 대비한 안전 마이그레이션
     columns_to_add = [
         ("option_1", "TEXT"), ("option_2", "TEXT"), 
         ("option_3", "TEXT"), ("option_4", "TEXT"), 
@@ -78,7 +77,6 @@ def save_question_split(round_name, q_num, q_text, opts, answer, solution):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # 보기 리스트에서 안전하게 최대 5개 추출
     opt_1 = opts[0] if len(opts) > 0 else None
     opt_2 = opts[1] if len(opts) > 1 else None
     opt_3 = opts[2] if len(opts) > 2 else None
@@ -173,7 +171,6 @@ def reset_round_questions(round_name):
     conn.close()
 
 def get_options_list(row_opt1, row_opt2, row_opt3, row_opt4, row_opt5):
-    """DB에 저장된 개별 보기 컬럼들을 리스트로 묶어줍니다."""
     opts = [row_opt1, row_opt2, row_opt3, row_opt4, row_opt5]
     return [o for o in opts if o is not None and str(o).strip() != ""]
 
@@ -353,7 +350,10 @@ if check_password():
 
                     st.markdown(f"---")
                     st.markdown(f"**[문제 {q_num}번] (ID: {q_id})**")
-                    st.markdown(q_text)
+                    
+                    # 💡 줄바꿈(\n)이 마크다운에서 무시되지 않도록 이중 공백 또는 개행 처리 적용
+                    formatted_content = q_text.replace("\r\n", "\n").replace("\n", "  \n")
+                    st.markdown(formatted_content)
                     
                     saved_ans, saved_graded = load_progress(selected_round, q_id)
                     ans = saved_ans
@@ -416,7 +416,9 @@ if check_password():
 
                 st.markdown(f"---")
                 st.markdown(f"**[{round_name}] 문제 {q_num}번 (ID: {q_id})**")
-                st.markdown(q_text)
+                
+                formatted_content = q_text.replace("\r\n", "\n").replace("\n", "  \n")
+                st.markdown(formatted_content)
 
                 saved_ans, saved_graded = load_wrong_progress(q_id)
                 ans = saved_ans
