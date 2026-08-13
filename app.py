@@ -144,17 +144,35 @@ def reset_round_questions(round_name):
     conn.close()
 
 def parse_question_content(raw_content):
-    """DB에 저장된 content를 안전하게 파싱하여 본문과 보기를 분리합니다."""
-    try:
-        if raw_content.startswith("{") or raw_content.startswith("["):
-            content_dict = json.loads(raw_content)
-            if isinstance(content_dict, dict):
-                q_text = content_dict.get("question", raw_content)
-                options = content_dict.get("options", [])
-                return q_text, options
-    except:
-        pass
-    return raw_content, []
+    """DB에 꼬여서 저장된 JSON 형태의 content를 완벽하게 재귀 파싱하여 본문과 보기를 분리합니다."""
+    if not raw_content:
+        return "", []
+    
+    current_data = raw_content
+    for _ in range(3):  # 최대 3번까지 중첩 JSON 언래핑 시도
+        if isinstance(current_data, str):
+            stripped = current_data.strip()
+            if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+                try:
+                    current_data = json.loads(stripped)
+                    continue
+                except:
+                    break
+        break
+
+    if isinstance(current_data, dict):
+        q_text = current_data.get("question", "")
+        options = current_data.get("options", [])
+        if not q_text and "question_text" in current_data:
+            q_text = current_data.get("question_text", "")
+        return str(q_text), list(options)
+    elif isinstance(current_data, list) and len(current_data) > 0:
+        if isinstance(current_data[0], dict):
+            q_text = current_data[0].get("question", current_data[0].get("question_text", ""))
+            options = current_data[0].get("options", [])
+            return str(q_text), list(options)
+
+    return str(raw_content), []
 
 def check_password():
     if "password_correct" not in st.session_state: st.session_state["password_correct"] = False
