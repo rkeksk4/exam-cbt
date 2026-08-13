@@ -30,7 +30,7 @@ def init_db():
                   solution TEXT, 
                   is_wrong INTEGER DEFAULT 0)''')
     
-    # 기존 DB에 question_number 컬럼이 없을 경우를 대비한 안전 장치 (마이그레이션)
+    # 기존 DB에 question_number 컬럼이 없을 경우 자동으로 추가하는 안전 장치
     try:
         c.execute("SELECT question_number FROM questions LIMIT 1")
     except sqlite3.OperationalError:
@@ -195,7 +195,6 @@ if check_password():
         if uploaded_json_file is not None:
             try:
                 file_content = uploaded_json_file.getvalue().decode("utf-8")
-                # 업로드된 내용을 예쁘게 정렬하여 세션 텍스트에 반영
                 parsed_temp = json.loads(file_content)
                 st.session_state["json_input_text"] = json.dumps(parsed_temp, ensure_ascii=False, indent=4)
                 st.success("📁 JSON 파일이 성공적으로 로드되었습니다! 아래 입력창에서 내용을 확인하신 뒤 DB 등록 버튼을 눌러주세요.")
