@@ -170,45 +170,34 @@ if check_password():
 
         st.markdown("---")
         
-        # 세션 상태 초기화
+        # 세션 상태 기본값 설정
         if "json_input_text" not in st.session_state:
             st.session_state["json_input_text"] = json.dumps([
                {
                   "question_number": 1,
                   "question_text": "예시 문제 본문 내용",
-                  "options": [
-                     "① 보기 1",
-                     "② 보기 2",
-                     "③ 보기 3",
-                     "④ 보기 4",
-                     "⑤ 보기 5"
-                  ],
+                  "options": ["① 보기 1", "② 보기 2", "③ 보기 3", "④ 보기 4", "⑤ 보기 5"],
                   "answer": "①",
                   "solution": "해설 내용"
                }
             ], ensure_ascii=False, indent=4)
 
-        # 📁 파일 업로더 (업로드 시 즉시 세션 갱신 및 rerun 처리)
         st.subheader("📁 JSON 파일 업로드")
-        
-        # 이전 업로드 파일과 비교하기 위한 상태값 관리
-        if "last_uploaded_file" not in st.session_state:
-            st.session_state["last_uploaded_file"] = None
-
         uploaded_json_file = st.file_uploader("문제가 담긴 JSON 파일을 업로드하세요", type=["json"])
         
-        if uploaded_json_file is not None and uploaded_json_file != st.session_state["last_uploaded_file"]:
+        # 파일이 업로드되었을 때 처리
+        if uploaded_json_file is not None:
             try:
-                file_content = uploaded_json_file.getvalue().decode("utf-8")
-                parsed_temp = json.loads(file_content)
-                formatted_text = json.dumps(parsed_temp, ensure_ascii=False, indent=4)
+                # 파일을 읽어서 텍스트로 변환
+                stringdata = uploaded_json_file.read().decode("utf-8")
+                parsed_json = json.loads(stringdata)
+                pretty_text = json.dumps(parsed_json, ensure_ascii=False, indent=4)
                 
-                # 세션에 텍스트와 파일 객체 상태 업데이트
-                st.session_state["json_input_text"] = formatted_text
-                st.session_state["last_uploaded_file"] = uploaded_json_file
-                
-                st.success("📁 파일이 성공적으로 로드되었습니다! 텍스트 상자에 반영됩니다.")
-                st.rerun()
+                # 세션에 내용이 다를 경우에만 업데이트하고 즉시 새로고침
+                if st.session_state["json_input_text"] != pretty_text:
+                    st.session_state["json_input_text"] = pretty_text
+                    st.success("📁 파일이 성공적으로 로드되었습니다!")
+                    st.rerun()
             except Exception as e:
                 st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
 
@@ -217,10 +206,9 @@ if check_password():
 
         if st.button("🗑️ 입력창 내용 비우기 (초기화)"):
             st.session_state["json_input_text"] = ""
-            st.session_state["last_uploaded_file"] = None
             st.rerun()
 
-        # text_area의 내용을 세션 상태와 동기화
+        # text_area에 session_state 값을 바인딩하여 즉시 노출되도록 설정
         json_input_text = st.text_area(
             "JSON 데이터 입력", 
             value=st.session_state["json_input_text"], 
@@ -228,6 +216,7 @@ if check_password():
             key="json_textarea_widget"
         )
         
+        # 사용자가 텍스트 박스를 직접 수정할 때 동기화
         if json_input_text != st.session_state["json_input_text"]:
             st.session_state["json_input_text"] = json_input_text
 
