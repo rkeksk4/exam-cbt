@@ -174,6 +174,14 @@ def get_options_list(row_opt1, row_opt2, row_opt3, row_opt4, row_opt5):
     opts = [row_opt1, row_opt2, row_opt3, row_opt4, row_opt5]
     return [o for o in opts if o is not None and str(o).strip() != ""]
 
+def format_text_with_breaks(text):
+    """줄바꿈과 보기가 붙지 않도록 개행을 넉넉하게 확보합니다."""
+    if not text:
+        return ""
+    # 기존 줄바꿈을 정리하고 마크다운에서 강제 개행이 되도록 처리
+    cleaned = text.replace("\r\n", "\n")
+    return cleaned.replace("\n", "  \n\n")
+
 def check_password():
     if "password_correct" not in st.session_state: st.session_state["password_correct"] = False
     if not st.session_state["password_correct"]:
@@ -351,8 +359,8 @@ if check_password():
                     st.markdown(f"---")
                     st.markdown(f"**[문제 {q_num}번] (ID: {q_id})**")
                     
-                    # 💡 줄바꿈(\n)이 마크다운에서 무시되지 않도록 이중 공백 또는 개행 처리 적용
-                    formatted_content = q_text.replace("\r\n", "\n").replace("\n", "  \n")
+                    # 💡 가독성을 위해 개행 간격을 넉넉히 확보
+                    formatted_content = format_text_with_breaks(q_text)
                     st.markdown(formatted_content)
                     
                     saved_ans, saved_graded = load_progress(selected_round, q_id)
@@ -417,7 +425,7 @@ if check_password():
                 st.markdown(f"---")
                 st.markdown(f"**[{round_name}] 문제 {q_num}번 (ID: {q_id})**")
                 
-                formatted_content = q_text.replace("\r\n", "\n").replace("\n", "  \n")
+                formatted_content = format_text_with_breaks(q_text)
                 st.markdown(formatted_content)
 
                 saved_ans, saved_graded = load_wrong_progress(q_id)
@@ -453,17 +461,19 @@ if check_password():
 
     # ================= 4. 문제 관리/수정 =================
     elif menu == "문제 관리/수정":
-        st.header("🛠 문제 내용 및 정답/해설 수정")
-        st.info("문제를 개별적으로 관리하고, 보기를 선택해 정답을 간편하게 수정할 수 있습니다.")
+        st.header("🛠 회차별 문제 관리 및 수정")
+        st.info("수정할 회차를 선택한 후 해당 회차의 문제를 개별적으로 수정하거나 정답을 변경할 수 있습니다.")
         
-        with st.expander("⚠️ 위험 구역: 회차별 데이터 초기화"):
-            reset_round_target = st.selectbox("초기화할 회차 선택", ROUND_OPTIONS, key="reset_target_round")
-            confirm_checkbox = st.checkbox(f"[{reset_round_target}]의 모든 문제와 풀이 기록을 영구적으로 삭제하는 것에 동의합니다.")
+        # 💡 회차 선택 기능 추가
+        selected_manage_round = st.selectbox("관리할 회차 선택", ROUND_OPTIONS, key="manage_round_select")
+
+        with st.expander(f"⚠️ 위험 구역: [{selected_manage_round}] 데이터 전체 초기화"):
+            confirm_checkbox = st.checkbox(f"[{selected_manage_round}]의 모든 문제와 풀이 기록을 영구적으로 삭제하는 것에 동의합니다.")
             
-            if st.button(f"🗑️ [{reset_round_target}] 데이터 완전 초기화 실행"):
+            if st.button(f"🗑️ [{selected_manage_round}] 데이터 완전 초기화 실행"):
                 if confirm_checkbox:
-                    reset_round_questions(reset_round_target)
-                    st.success(f"[{reset_round_target}]의 모든 데이터와 기록이 초기화되었습니다!")
+                    reset_round_questions(selected_manage_round)
+                    st.success(f"[{selected_manage_round}]의 모든 데이터와 기록이 초기화되었습니다!")
                     st.toast("초기화 완료!", icon="🗑️")
                     st.rerun()
                 else:
@@ -473,15 +483,16 @@ if check_password():
 
         try:
             conn = sqlite3.connect(DB_FILE)
-            questions = conn.execute("SELECT id, round, question_number, content, option_1, option_2, option_3, option_4, option_5, correct_answer, solution FROM questions ORDER BY round, question_number ASC").fetchall()
+            questions = conn.execute("SELECT id, round, question_number, content, option_1, option_2, option_3, option_4, option_5, correct_answer, solution FROM questions WHERE round = ? ORDER BY question_number ASC", (selected_manage_round,)).fetchall()
             conn.close()
         except sqlite3.OperationalError:
             init_db()
             questions = []
 
         if not questions:
-            st.info("수정할 문제가 없습니다.")
+            st.info(f"[{selected_manage_round}]에 등록된 문제가 없습니다.")
         else:
+            st.subheader(f"📝 [{selected_manage_round}] 등록된 문제 목록 (총 {len(questions)}문항)")
             for q in questions:
                 q_id = q[0]
                 round_name = q[1]
@@ -491,7 +502,7 @@ if check_password():
                 current_ans = q[9]
                 current_sol = q[10]
 
-                with st.expander(f"[{round_name}] 문제 {q_num}번 (ID: {q_id}) 수정하기"):
+                with st.expander(f"문제 {q_num}번 (ID: {q_id}) 수정하기"):
                     new_content_text = st.text_area("문제 내용", value=q_text, key=f"c_text_{q_id}")
                     new_sol = st.text_area("해설 수정", value=current_sol, key=f"s_{q_id}")
                     
