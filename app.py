@@ -17,7 +17,7 @@ st.markdown("""
 ROUND_OPTIONS = [f"{i}회차" for i in range(1, 13)]
 DB_FILE = "question_bank.db"
 
-# --- 데이터베이스(DB) 초기화 및 안전성 강화 ---
+# --- 데이터베이스(DB) 초기화 및 마이그레이션 ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -30,6 +30,12 @@ def init_db():
                   solution TEXT, 
                   is_wrong INTEGER DEFAULT 0)''')
     
+    # 기존 DB에 question_number 컬럼이 없을 경우를 대비한 안전 장치 (마이그레이션)
+    try:
+        c.execute("SELECT question_number FROM questions LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE questions ADD COLUMN question_number INTEGER")
+
     c.execute('''CREATE TABLE IF NOT EXISTS user_progress 
                  (round TEXT, 
                   question_id INTEGER, 
