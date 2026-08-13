@@ -30,7 +30,7 @@ def init_db():
                   solution TEXT, 
                   is_wrong INTEGER DEFAULT 0)''')
     
-    # 기존 DB에 question_number 컬럼이 없을 경우 자동으로 추가하는 안전 장치
+    # 기존 DB에 question_number 컬럼이 없을 경우를 대비한 안전 장치 (마이그레이션)
     try:
         c.execute("SELECT question_number FROM questions LIMIT 1")
     except sqlite3.OperationalError:
@@ -189,16 +189,21 @@ if check_password():
                }
             ], ensure_ascii=False, indent=4)
 
-        # 1-1. JSON 파일 업로드 방식 (업로드 시 텍스트 상자에 반영)
+        # 1-1. JSON 파일 업로드 방식 (업로드 시 즉시 세션에 반영 후 새로고침)
         st.subheader("📁 JSON 파일 업로드")
         uploaded_json_file = st.file_uploader("문제가 담긴 JSON 파일을 업로드하세요", type=["json"])
+        
         if uploaded_json_file is not None:
             try:
                 file_content = uploaded_json_file.getvalue().decode("utf-8")
                 parsed_temp = json.loads(file_content)
-                st.session_state["json_input_text"] = json.dumps(parsed_temp, ensure_ascii=False, indent=4)
-                st.success("📁 JSON 파일이 성공적으로 로드되었습니다! 아래 입력창에서 내용을 확인하신 뒤 DB 등록 버튼을 눌러주세요.")
-                st.toast("JSON 파일 로드 완료!", icon="📂")
+                new_text = json.dumps(parsed_temp, ensure_ascii=False, indent=4)
+                
+                # 내용이 바뀐 경우에만 세션 업데이트 후 재실행하여 즉시 텍스트 상자에 반영
+                if st.session_state["json_input_text"] != new_text:
+                    st.session_state["json_input_text"] = new_text
+                    st.success("📁 JSON 파일이 성공적으로 로드되었습니다!")
+                    st.rerun()
             except Exception as e:
                 st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
 
@@ -210,9 +215,15 @@ if check_password():
             st.session_state["json_input_text"] = ""
             st.rerun()
 
-        json_input_text = st.text_area("JSON 데이터 입력", value=st.session_state["json_input_text"], height=300, key="json_textarea_widget")
+        # text_area에 value를 지정할 때 key를 분리하여 세션 충돌 방지 및 실시간 반영 보장
+        json_input_text = st.text_area(
+            "JSON 데이터 입력", 
+            value=st.session_state["json_input_text"], 
+            height=300, 
+            key="json_textarea_widget"
+        )
         
-        # 텍스트 영역 값이 사용자에 의해 직접 수정될 때 세션 동기화
+        # 사용자가 텍스트 상자에서 직접 수정할 때 세션 동기화
         if json_input_text != st.session_state["json_input_text"]:
             st.session_state["json_input_text"] = json_input_text
 
