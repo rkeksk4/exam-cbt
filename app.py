@@ -185,15 +185,12 @@ if check_password():
         st.subheader("📁 JSON 파일 업로드")
         uploaded_json_file = st.file_uploader("문제가 담긴 JSON 파일을 업로드하세요", type=["json"])
         
-        # 파일이 업로드되었을 때 처리
         if uploaded_json_file is not None:
             try:
-                # 파일을 읽어서 텍스트로 변환
                 stringdata = uploaded_json_file.read().decode("utf-8")
                 parsed_json = json.loads(stringdata)
                 pretty_text = json.dumps(parsed_json, ensure_ascii=False, indent=4)
                 
-                # 세션에 내용이 다를 경우에만 업데이트하고 즉시 새로고침
                 if st.session_state["json_input_text"] != pretty_text:
                     st.session_state["json_input_text"] = pretty_text
                     st.success("📁 파일이 성공적으로 로드되었습니다!")
@@ -208,17 +205,12 @@ if check_password():
             st.session_state["json_input_text"] = ""
             st.rerun()
 
-        # text_area에 session_state 값을 바인딩하여 즉시 노출되도록 설정
-        json_input_text = st.text_area(
+        # text_area에 key를 부여하고 value 인자를 제거하여 상태 충돌 방지
+        st.text_area(
             "JSON 데이터 입력", 
-            value=st.session_state["json_input_text"], 
             height=300, 
-            key="json_textarea_widget"
+            key="json_input_text"
         )
-        
-        # 사용자가 텍스트 박스를 직접 수정할 때 동기화
-        if json_input_text != st.session_state["json_input_text"]:
-            st.session_state["json_input_text"] = json_input_text
 
         if st.button("JSON 데이터 DB에 등록하기"):
             try:
@@ -268,11 +260,13 @@ if check_password():
                 st.toast("백업 파일이 다운로드되었습니다!", icon="💾")
 
         uploaded_db = st.file_uploader("📤 백업해둔 DB 파일 업로드하여 복구하기", type=["db"], key="db_uploader")
+        
+        # DB 복구 버튼 클릭 시 즉시 반영되도록 수정
         if uploaded_db is not None:
             if st.button("🔄 데이터 복구 적용하기"):
                 try:
                     with open(DB_FILE, "wb") as f:
-                        f.write(uploaded_db.getbuffer())
+                        f.write(uploaded_db.read())
                     st.success("🎉 데이터가 성공적으로 복구되었습니다! 잠시 후 새로고침됩니다.")
                     st.toast("복구 완료!", icon="🔄")
                     st.rerun()
