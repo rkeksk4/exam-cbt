@@ -30,7 +30,6 @@ def init_db():
                   solution TEXT, 
                   is_wrong INTEGER DEFAULT 0)''')
     
-    # 기존 DB에 question_number 컬럼이 없을 경우를 대비한 안전 장치 (마이그레이션)
     try:
         c.execute("SELECT question_number FROM questions LIMIT 1")
     except sqlite3.OperationalError:
@@ -189,33 +188,39 @@ if check_password():
                }
             ], ensure_ascii=False, indent=4)
 
-        # 1-1. JSON 파일 업로드 방식 (업로드 시 즉시 세션에 반영 후 새로고침)
+        # 📁 파일 업로더 (업로드 시 즉시 세션 갱신 및 rerun 처리)
         st.subheader("📁 JSON 파일 업로드")
+        
+        # 이전 업로드 파일과 비교하기 위한 상태값 관리
+        if "last_uploaded_file" not in st.session_state:
+            st.session_state["last_uploaded_file"] = None
+
         uploaded_json_file = st.file_uploader("문제가 담긴 JSON 파일을 업로드하세요", type=["json"])
         
-        if uploaded_json_file is not None:
+        if uploaded_json_file is not None and uploaded_json_file != st.session_state["last_uploaded_file"]:
             try:
                 file_content = uploaded_json_file.getvalue().decode("utf-8")
                 parsed_temp = json.loads(file_content)
-                new_text = json.dumps(parsed_temp, ensure_ascii=False, indent=4)
+                formatted_text = json.dumps(parsed_temp, ensure_ascii=False, indent=4)
                 
-                # 내용이 바뀐 경우에만 세션 업데이트 후 재실행하여 즉시 텍스트 상자에 반영
-                if st.session_state["json_input_text"] != new_text:
-                    st.session_state["json_input_text"] = new_text
-                    st.success("📁 JSON 파일이 성공적으로 로드되었습니다!")
-                    st.rerun()
+                # 세션에 텍스트와 파일 객체 상태 업데이트
+                st.session_state["json_input_text"] = formatted_text
+                st.session_state["last_uploaded_file"] = uploaded_json_file
+                
+                st.success("📁 파일이 성공적으로 로드되었습니다! 텍스트 상자에 반영됩니다.")
+                st.rerun()
             except Exception as e:
                 st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
 
         st.markdown("---")
         st.subheader("✍️ JSON 데이터 입력 및 확인")
 
-        # 텍스트 초기화 버튼
         if st.button("🗑️ 입력창 내용 비우기 (초기화)"):
             st.session_state["json_input_text"] = ""
+            st.session_state["last_uploaded_file"] = None
             st.rerun()
 
-        # text_area에 value를 지정할 때 key를 분리하여 세션 충돌 방지 및 실시간 반영 보장
+        # text_area의 내용을 세션 상태와 동기화
         json_input_text = st.text_area(
             "JSON 데이터 입력", 
             value=st.session_state["json_input_text"], 
@@ -223,7 +228,6 @@ if check_password():
             key="json_textarea_widget"
         )
         
-        # 사용자가 텍스트 상자에서 직접 수정할 때 세션 동기화
         if json_input_text != st.session_state["json_input_text"]:
             st.session_state["json_input_text"] = json_input_text
 
@@ -271,16 +275,10 @@ if check_password():
             with open(DB_FILE, "rb") as f:
                 db_bytes = f.read()
             
-            download_clicked = st.download_button(
-                label="📥 현재 문제 데이터 백업하기 (.db 다운로드)",
-                data=db_bytes,
-                file_name="question_bank.db",
-                mime="application/x-sqlite3"
-            )
-            if download_clicked:
+            if st.download_button(label="📥 현재 문제 데이터 백업하기 (.db 다운로드)", data=db_bytes, file_name="question_bank.db", mime="application/x-sqlite3"):
                 st.toast("백업 파일이 다운로드되었습니다!", icon="💾")
 
-        uploaded_db = st.file_uploader("📤 백업해둔 DB 파일 업로드하여 복구하기", type=["db"])
+        uploaded_db = st.file_uploader("📤 백업해둔 DB 파일 업로드하여 복구하기", type=["db"], key="db_uploader")
         if uploaded_db is not None:
             if st.button("🔄 데이터 복구 적용하기"):
                 try:
@@ -359,13 +357,7 @@ if check_password():
                         if saved_ans in options:
                             default_idx = options.index(saved_ans)
 
-                        selected_option = st.radio(
-                            f"보기 선택 ({q_num}번)", 
-                            options, 
-                            index=default_idx, 
-                            key=f"radio_{q_id}"
-                        )
-                        
+                        selected_option = st.radio(f"보기 선택 ({q_num}번)", options, index=default_idx, key=f"radio_{q_id}")
                         if selected_option and selected_option != saved_ans:
                             ans = selected_option
                             saved_graded = True
@@ -435,13 +427,7 @@ if check_password():
                     if saved_ans in options:
                         default_idx = options.index(saved_ans)
 
-                    selected_option = st.radio(
-                        f"오답 다시 풀기 ({round_name} {q_num}번)", 
-                        options, 
-                        index=default_idx, 
-                        key=f"wrong_radio_{q_id}"
-                    )
-                    
+                    selected_option = st.radio(f"오답 다시 풀기 ({round_name} {q_num}번)", options, index=default_idx, key=f"wrong_radio_{q_id}")
                     if selected_option and selected_option != saved_ans:
                         ans = selected_option
                         saved_graded = True
@@ -469,7 +455,6 @@ if check_password():
         st.header("🛠 문제 내용 및 정답/해설 수정")
         st.info("문제를 개별적으로 관리하고, 보기를 선택해 정답을 간편하게 수정할 수 있습니다.")
         
-        # --- 회차별 데이터 초기화 구역 (안전 장치 포함) ---
         with st.expander("⚠️ 위험 구역: 회차별 데이터 초기화"):
             reset_round_target = st.selectbox("초기화할 회차 선택", ROUND_OPTIONS, key="reset_target_round")
             confirm_checkbox = st.checkbox(f"[{reset_round_target}]의 모든 문제와 풀이 기록을 영구적으로 삭제하는 것에 동의합니다.")
@@ -533,13 +518,7 @@ if check_password():
                                 ans_default_idx = i
                                 break
 
-                        selected_new_ans = st.radio(
-                            "정답으로 지정할 보기 선택", 
-                            options, 
-                            index=ans_default_idx, 
-                            key=f"edit_ans_radio_{q_id}"
-                        )
-                        
+                        selected_new_ans = st.radio("정답으로 지정할 보기 선택", options, index=ans_default_idx, key=f"edit_ans_radio_{q_id}")
                         if st.button(f"선택한 보기로 정답 변경 ({round_name} {q_num}번)", key=f"save_ans_{q_id}"):
                             update_question_answer(q_id, selected_new_ans)
                             st.success(f"🎉 정답이 '{selected_new_ans}'로 변경되었습니다!")
