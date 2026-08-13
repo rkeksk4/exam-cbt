@@ -144,12 +144,12 @@ def reset_round_questions(round_name):
     conn.close()
 
 def parse_question_content(raw_content):
-    """DB에 꼬여서 저장된 JSON 형태의 content를 완벽하게 재귀 파싱하여 본문과 보기를 분리합니다."""
+    """DB에 저장된 content를 안전하게 파싱하여 본문과 보기를 분리합니다."""
     if not raw_content:
         return "", []
     
     current_data = raw_content
-    for _ in range(3):  # 최대 3번까지 중첩 JSON 언래핑 시도
+    for _ in range(3):
         if isinstance(current_data, str):
             stripped = current_data.strip()
             if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
@@ -161,10 +161,8 @@ def parse_question_content(raw_content):
         break
 
     if isinstance(current_data, dict):
-        q_text = current_data.get("question", "")
+        q_text = current_data.get("question", current_data.get("question_text", ""))
         options = current_data.get("options", [])
-        if not q_text and "question_text" in current_data:
-            q_text = current_data.get("question_text", "")
         return str(q_text), list(options)
     elif isinstance(current_data, list) and len(current_data) > 0:
         if isinstance(current_data[0], dict):
@@ -259,8 +257,10 @@ if check_password():
                     count = 0
                     for q in parsed_data:
                         q_num = q.get("question_number")
-                        q_text = q.get("question_text", "").strip()
+                        # 텍스트와 보기를 각각 명확하게 추출하여 저장
+                        q_text = q.get("question_text", q.get("question", "")).strip()
                         opts = q.get("options", [])
+                        
                         full_content = json.dumps({"question": q_text, "options": opts}, ensure_ascii=False)
                         a_text = str(q.get("answer", "")).strip()
                         s_text = q.get("solution", "").strip()
