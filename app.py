@@ -17,7 +17,7 @@ st.markdown("""
 ROUND_OPTIONS = [f"{i}회차" for i in range(1, 13)]
 DB_FILE = "question_bank.db"
 
-# --- 데이터베이스(DB) 초기화 ---
+# --- 데이터베이스(DB) 초기화 및 안전성 강화 ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -47,11 +47,15 @@ def init_db():
 init_db()
 
 def get_existing_question_numbers(round_name):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    rows = c.execute("SELECT question_number FROM questions WHERE round = ?", (round_name,)).fetchall()
-    conn.close()
-    return [row[0] for row in rows if row[0] is not None]
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        rows = c.execute("SELECT question_number FROM questions WHERE round = ?", (round_name,)).fetchall()
+        conn.close()
+        return [row[0] for row in rows if row[0] is not None]
+    except sqlite3.OperationalError:
+        init_db()
+        return []
 
 def save_question_direct(round_name, q_num, q_text, answer, solution):
     conn = sqlite3.connect(DB_FILE)
@@ -250,10 +254,15 @@ if check_password():
         st.header("🎯 회차별 시험 풀기")
         selected_round = st.selectbox("풀어볼 회차 선택", ROUND_OPTIONS)
         
-        conn = sqlite3.connect(DB_FILE)
-        total_q_count = conn.execute("SELECT COUNT(*) FROM questions WHERE round = ?", (selected_round,)).fetchone()[0]
-        has_history = conn.execute("SELECT COUNT(*) FROM user_progress WHERE round = ?", (selected_round,)).fetchone()[0] > 0
-        conn.close()
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            total_q_count = conn.execute("SELECT COUNT(*) FROM questions WHERE round = ?", (selected_round,)).fetchone()[0]
+            has_history = conn.execute("SELECT COUNT(*) FROM user_progress WHERE round = ?", (selected_round,)).fetchone()[0] > 0
+            conn.close()
+        except sqlite3.OperationalError:
+            init_db()
+            total_q_count = 0
+            has_history = False
 
         st.info(f"📊 **[{selected_round}]** 현재 총 **{total_q_count}문제**가 등록되어 있습니다.")
 
@@ -343,9 +352,13 @@ if check_password():
     # ================= 3. 오답 노트 =================
     elif menu == "오답 노트":
         st.header("📝 오답 노트")
-        conn = sqlite3.connect(DB_FILE)
-        wrongs = conn.execute("SELECT * FROM questions WHERE is_wrong = 1 ORDER BY round, question_number ASC").fetchall()
-        conn.close()
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            wrongs = conn.execute("SELECT * FROM questions WHERE is_wrong = 1 ORDER BY round, question_number ASC").fetchall()
+            conn.close()
+        except sqlite3.OperationalError:
+            init_db()
+            wrongs = []
 
         if not wrongs:
             st.success("현재 틀린 문제가 없습니다. 아주 잘하고 계십니다!")
@@ -429,9 +442,13 @@ if check_password():
 
         st.markdown("---")
 
-        conn = sqlite3.connect(DB_FILE)
-        questions = conn.execute("SELECT * FROM questions ORDER BY round, question_number ASC").fetchall()
-        conn.close()
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            questions = conn.execute("SELECT * FROM questions ORDER BY round, question_number ASC").fetchall()
+            conn.close()
+        except sqlite3.OperationalError:
+            init_db()
+            questions = []
 
         if not questions:
             st.info("수정할 문제가 없습니다.")
